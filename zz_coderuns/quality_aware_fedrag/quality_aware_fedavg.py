@@ -69,9 +69,12 @@ class QualityAwareFedAvg(FedAvg):
             ndarrays = parameters_to_ndarrays(fit_res.parameters)
             n_examples = fit_res.num_examples
             loss = fit_res.metrics.get("loss", 1.0)
+            logical_cid = str(
+                fit_res.metrics.get("logical_cid", client_proxy.cid)
+            )
             client_data.append(
                 {
-                    "cid": client_proxy.cid,
+                    "cid": logical_cid,
                     "ndarrays": ndarrays,
                     "n_examples": n_examples,
                     "loss": float(loss),

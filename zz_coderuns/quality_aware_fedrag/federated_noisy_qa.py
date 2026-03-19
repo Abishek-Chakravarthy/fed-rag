@@ -41,18 +41,19 @@ from prepare_beir_data import (
 from quality_aware_fedavg import QualityAwareFedAvg
 
 
-NUM_ROUNDS = 3
+NUM_ROUNDS = 8
 NUM_CLIENTS = 3
 BATCH_SIZE = 8
-LEARNING_RATE = 2e-6
+LEARNING_RATE = 5e-5
 GENERATOR_MODEL = "distilgpt2"
 DATASET_NAME = "nfcorpus"
 MAX_TRAIN = 500 # Limits the training set to 500 query-response pairs.
 MAX_EVAL = 100 # Limits the evaluation set to 100 query-response pairs.
 MAX_DOCS = 1000 # Limits the knowledge store to 1000 documents.
-NOISE_RATIO = 0.7 # 70% of the training data will be corrupted.
+NOISE_RATIO = 1.0 # 100% of the training data will be corrupted.
 NOISE_MODE = "shuffle" # The type of noise to introduce.
 NOISY_CLIENT_ID = "2" # The client to introduce noise to.
+NOISY_CLIENT_DATA_FRACTION = 0.50
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_DIR = os.path.join(OUTPUT_DIR, "output_csv_files")
 LOG_DIR = os.path.join(OUTPUT_DIR, "output_log_files")
@@ -133,6 +134,34 @@ def split_iid(train_pairs, num_clients):
     return splits
 
 
+def split_unequal_noisy(
+    train_pairs,
+    num_clients,
+    noisy_client=NOISY_CLIENT_ID,
+    noisy_fraction=NOISY_CLIENT_DATA_FRACTION,
+):
+    random.seed(CURRENT_SEED)
+    shuffled = train_pairs.copy()
+    random.shuffle(shuffled)
+
+    noisy_count = int(len(shuffled) * noisy_fraction)
+    clean_count = len(shuffled) - noisy_count
+
+    clean_clients = [str(i) for i in range(num_clients) if str(i) != noisy_client]
+    clean_chunk = clean_count // len(clean_clients)
+
+    splits = {}
+    offset = 0
+    for i, cid in enumerate(clean_clients):
+        end = offset + clean_chunk if i < len(clean_clients) - 1 else clean_count
+        splits[cid] = shuffled[offset:end]
+        offset = end
+
+    splits[noisy_client] = shuffled[clean_count:]
+
+    return splits
+
+
 def split_noisy(
     train_pairs,
     num_clients,
@@ -153,7 +182,11 @@ def split_noisy(
     Returns:
         dict: A mapping from client ID to their (potentially corrupted) training pairs.
     """
-    splits = split_iid(train_pairs, num_clients) # {'0': [len(train_pairs)//num_clients number of random train_pairs elements], ...}
+    splits = split_unequal_noisy(
+        train_pairs, num_clients,
+        noisy_client=noisy_client,
+        noisy_fraction=NOISY_CLIENT_DATA_FRACTION,
+    )
 
     for cid in sorted(splits.keys()):
         if cid != noisy_client:
@@ -625,6 +658,7 @@ def client_fn(cid: str):
         metrics["loss_source"] = "lsr_training_loss"
         metrics["loss_stage"] = "post_local_training"
         metrics["noise_mode"] = CURRENT_NOISE_MODE
+        metrics["logical_cid"] = cid
         return weights, num_examples, metrics
 
     flower_client.fit = audited_fit
