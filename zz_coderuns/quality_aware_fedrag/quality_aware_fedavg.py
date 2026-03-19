@@ -207,7 +207,7 @@ class QualityAwareFedAvg(FedAvg):
                 f" | post_mrr={post_eval_metrics.get('mrr', 0.0):.4f}"
                 f" | post_ndcg={post_eval_metrics.get('ndcg_at_k', 0.0):.4f}"
             )
-        print(summary)
+        print(summary, flush=True)
 
         self.last_global_ndarrays = aggregated
 

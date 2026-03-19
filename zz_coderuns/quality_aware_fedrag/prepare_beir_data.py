@@ -1,4 +1,5 @@
 import random
+import torch
 from datasets import load_dataset, Dataset
 from fed_rag.knowledge_stores import InMemoryKnowledgeStore
 from fed_rag.retrievers import HFSentenceTransformerRetriever
@@ -211,8 +212,16 @@ def create_retriever():
     Returns:
         HFSentenceTransformerRetriever: An initialized retriever instance.
     """
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+
     return HFSentenceTransformerRetriever(
         model_name=RETRIEVER_MODEL,
+        load_model_kwargs={"device": device},
     )
 
 

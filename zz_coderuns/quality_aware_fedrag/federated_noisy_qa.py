@@ -84,6 +84,27 @@ CURRENT_NOISE_MODE = NOISE_MODE # A global tracker for how the "bad" client is c
 NOISE_CONTEXT = {} # A global dictionary to hold extra data needed for certain noise modes (e.g., the pool of cross-domain documents).
 
 
+def get_runtime_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def get_generator_load_kwargs() -> dict:
+    device = get_runtime_device()
+    if device == "cuda":
+        return {"torch_dtype": torch.float16, "device_map": "auto"}
+    return {"torch_dtype": torch.float32}
+
+
+def get_client_resources() -> dict[str, float]:
+    if torch.cuda.is_available():
+        return {"num_cpus": 2, "num_gpus": 0.34}
+    return {"num_cpus": 1, "num_gpus": 0}
+
+
 def split_iid(train_pairs, num_clients):
     """
     Splits the training data into IID (Independent and Identically Distributed) chunks for each client.
@@ -541,7 +562,7 @@ def client_fn(cid: str):
             do_sample=False,
             pad_token_id=50256,
         ),
-        load_model_kwargs={"torch_dtype": torch.float32},
+        load_model_kwargs=get_generator_load_kwargs(),
     )
 
     rag_system = RAGSystem(
@@ -665,6 +686,7 @@ def main(
         f"Start | α={alpha:.1f} | seed={seed} | mode={noise_mode} | "
         f"ratio={noise_ratio:.2f} | rounds={num_rounds} | epochs={local_epochs}"
     )
+    print(f"Device | runtime={get_runtime_device()}")
     print("=" * 70)
 
     data = setup_dataset(
@@ -727,12 +749,19 @@ def main(
     ROUND_METRICS.clear()
     strategy.round_quality_info.clear()
 
+    client_resources = get_client_resources()
+    print(
+        "Resources | "
+        f"client_cpus={client_resources['num_cpus']} | "
+        f"client_gpus={client_resources['num_gpus']}"
+    )
+
     fl.simulation.start_simulation(
         client_fn=client_fn,
         num_clients=NUM_CLIENTS,
         config=fl.server.ServerConfig(num_rounds=num_rounds),
         strategy=strategy,
-        client_resources={"num_cpus": 1, "num_gpus": 0},
+        client_resources=client_resources,
     )
 
     client_ids = sorted(CLIENT_TRAIN_DATA.keys(), key=client_sort_key)
