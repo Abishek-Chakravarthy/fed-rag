@@ -85,22 +85,25 @@ NOISE_CONTEXT = {} # A global dictionary to hold extra data needed for certain n
 
 
 def get_runtime_device() -> str:
-    if torch.cuda.is_available():
+    import torch as _torch
+    if _torch.cuda.is_available():
         return "cuda"
-    if torch.backends.mps.is_available():
+    if _torch.backends.mps.is_available():
         return "mps"
     return "cpu"
 
 
 def get_generator_load_kwargs() -> dict:
+    import torch as _torch
     device = get_runtime_device()
     if device == "cuda":
-        return {"torch_dtype": torch.float16, "device_map": "auto"}
-    return {"torch_dtype": torch.float32}
+        return {"torch_dtype": _torch.float16, "device_map": "auto"}
+    return {"torch_dtype": _torch.float32}
 
 
 def get_client_resources() -> dict[str, float]:
-    if torch.cuda.is_available():
+    import torch as _torch
+    if _torch.cuda.is_available():
         return {"num_cpus": 2, "num_gpus": 0.34}
     return {"num_cpus": 1, "num_gpus": 0}
 
