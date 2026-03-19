@@ -32,20 +32,20 @@ def load_beir_dataset(dataset_name: str = "nfcorpus"):
 
     # corpus is the Knowledge Base or the collection of documents. It contains all the "answers" or evidence.
     try:
-        corpus_ds = load_dataset(f"BeIR/{dataset_name}", "corpus", split="corpus")
+        corpus_ds = load_dataset(f"BeIR/{dataset_name}", "corpus", split="corpus", trust_remote_code=True)
     except Exception:
-        corpus_ds = load_dataset(f"BeIR/{dataset_name}", split="train")
+        corpus_ds = load_dataset(f"BeIR/{dataset_name}", split="train", trust_remote_code=True)
 
     # queries is a list of Questions or search terms users might type. Each query has a unique ID and text. These are the inputs you use to train and evaluate your RAG system.
     try:
-        queries_ds = load_dataset(f"BeIR/{dataset_name}", "queries", split="queries")
+        queries_ds = load_dataset(f"BeIR/{dataset_name}", "queries", split="queries", trust_remote_code=True)
     except Exception:
         queries_ds = None
 
     # qrels is Short for "Query Relevance judgments." This is the "Ground Truth" or the Answer Key. It maps which Documents (corpus-id) are actually relevant to which Queries (query-id).
     # A typical row in qrels looks like: {"query-id": "Q1", "corpus-id": "D5", "score": 1}. This tells the system that Document D5 is a correct answer for Query Q1.
     try:
-        qrels_ds = load_dataset(f"BeIR/{dataset_name}-qrels", split="test")
+        qrels_ds = load_dataset(f"BeIR/{dataset_name}-qrels", split="test", trust_remote_code=True)
     except Exception:
         """eg: [
             {"query-id": "101", "corpus-id": "doc_882", "score": 1},
@@ -54,7 +54,7 @@ def load_beir_dataset(dataset_name: str = "nfcorpus"):
             {"query-id": "103", "corpus-id": "doc_99",  "score": 0},
             ...]
         """
-        qrels_ds = load_dataset(f"BeIR/{dataset_name}-qrels", split="validation")
+        qrels_ds = load_dataset(f"BeIR/{dataset_name}-qrels", split="validation", trust_remote_code=True)
 
     """
     eg:
