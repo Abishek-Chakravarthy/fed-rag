@@ -1,0 +1,4 @@
+round,avg_loss,client_0_loss,client_0_domain,client_1_loss,client_1_domain,client_2_loss,client_2_domain,pre_mrr,pre_recall_at_k,pre_ndcg_at_k
+1,0.001008,0.000850,NFCorpus (Medical-A),0.001138,NFCorpus (Medical-B),0.001037,SciFact (Science),0.064305,0.120482,0.077805
+2,0.000951,0.000973,NFCorpus (Medical-A),0.001059,NFCorpus (Medical-B),0.000820,SciFact (Science),0.064305,0.120482,0.077805
+3,0.000893,0.000976,NFCorpus (Medical-A),0.000913,NFCorpus (Medical-B),0.000791,SciFact (Science),0.064305,0.120482,0.077805

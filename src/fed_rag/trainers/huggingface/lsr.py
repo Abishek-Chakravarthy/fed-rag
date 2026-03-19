@@ -76,24 +76,6 @@ class LSRSentenceTransformerTrainer(SentenceTransformerTrainer):
             *args, loss=loss, data_collator=data_collator, **kwargs
         )
 
-    def collect_scores(
-        self, inputs: dict[str, torch.Tensor | Any]
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if "retrieval_scores" not in inputs:
-            raise MissingInputTensor(
-                "Collated `inputs` are missing key `retrieval_scores`"
-            )
-
-        if "lm_scores" not in inputs:
-            raise MissingInputTensor(
-                "Collated `inputs` are missing key `lm_scores`"
-            )
-
-        retrieval_scores = inputs.get("retrieval_scores")
-        lm_scores = inputs.get("lm_scores")
-
-        return retrieval_scores, lm_scores
-
     def compute_loss(
         self,
         model: "SentenceTransformer",
@@ -103,25 +85,82 @@ class LSRSentenceTransformerTrainer(SentenceTransformerTrainer):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, Any]]:
         """Compute LSR loss.
 
-        NOTE: the forward pass of the model is taken care of in the DataCollatorForLSR.
-
-        Args:
-            model (SentenceTransformer): _description_
-            inputs (dict[str, torch.Tensor  |  Any]): _description_
-            return_outputs (bool, optional): _description_. Defaults to False.
-            num_items_in_batch (Any | None, optional): _description_. Defaults to None.
-
-        Raises:
-            NotImplementedError: _description_
-
-        Returns:
-            torch.Tensor | tuple[torch.Tensor, dict[str, Any]]: _description_
+        The differentiable forward pass through the encoder happens HERE
+        (not in the data collator) to avoid issues with DataLoader prefetching.
         """
-        retrieval_scores, lm_scores = self.collect_scores(inputs)
+        queries = inputs["queries"]
+        context_texts_batch = inputs["context_texts"]
+        lm_scores = inputs["lm_scores"]
+
+        batch_retriever_scores = []
+        for query, context_texts in zip(queries, context_texts_batch):
+            # query embedding via model forward (preserves grad graph)
+            query_features = model.tokenize([query])
+            query_features = {
+                k: v.to(model.device) for k, v in query_features.items()
+            }
+            query_embedding = model(query_features)["sentence_embedding"]
+
+            # context embeddings (no grad needed)
+            with torch.no_grad():
+                context_embedding = model.encode(
+                    context_texts, convert_to_tensor=True
+                )
+
+            # cosine similarity (differentiable w.r.t. query_embedding)
+            query_norm = torch.nn.functional.normalize(
+                query_embedding, p=2, dim=1
+            )
+            context_norm = torch.nn.functional.normalize(
+                context_embedding, p=2, dim=1
+            )
+            retriever_scores = torch.mm(
+                query_norm, context_norm.t()
+            ).squeeze(0)
+            batch_retriever_scores.append(retriever_scores)
+
+        retrieval_scores = torch.stack(batch_retriever_scores, dim=0)
         loss = self.loss(retrieval_scores, lm_scores)
 
-        # inputs are actually the outputs of RAGSystem's "forward" pass
         return (loss, inputs) if return_outputs else loss
+
+    
+    def create_optimizer(self) -> "torch.optim.Optimizer":
+        """Override to ensure the retriever model's params are optimized.
+
+        The parent SentenceTransformerTrainer builds optimizer param groups
+        from the loss module's parameters. Since LSRLoss has no trainable
+        params, the optimizer ends up empty. This override uses the actual
+        model parameters instead.
+        """
+        if self.optimizer is None:
+            decay_parameters = self.get_decay_parameter_names(self.model)
+            optimizer_grouped_parameters = [
+                {
+                    "params": [
+                        p for n, p in self.model.named_parameters()
+                        if (n in decay_parameters and p.requires_grad)
+                    ],
+                    "weight_decay": self.args.weight_decay,
+                },
+                {
+                    "params": [
+                        p for n, p in self.model.named_parameters()
+                        if (n not in decay_parameters and p.requires_grad)
+                    ],
+                    "weight_decay": 0.0,
+                },
+            ]
+            optimizer_cls, optimizer_kwargs = torch.optim.AdamW, {
+                "lr": self.args.learning_rate,
+                "betas": (self.args.adam_beta1, self.args.adam_beta2),
+                "eps": self.args.adam_epsilon,
+            }
+            self.optimizer = optimizer_cls(
+                optimizer_grouped_parameters, **optimizer_kwargs
+            )
+        return self.optimizer
+
 
 
 class HuggingFaceTrainerForLSR(HuggingFaceTrainerMixin, BaseRetrieverTrainer):

@@ -1,3 +1,4 @@
+# /Users/abishekchakravarthy/FInal_year_project/fed-rag/src/fed_rag/data_collators/huggingface/lsr.py
 """HuggingFace Data Collator For LM-Supervised Retriever Training"""
 
 from typing import Any, Callable
@@ -197,26 +198,20 @@ class DataCollatorForLSR(
         if return_tensors != "pt":
             raise FedRAGError(f"Framework '{return_tensors}' not recognized!")
 
-        # get retriever for document selection
-        retriever = self.rag_system.retriever
-
-        batch_queries = []
-        batch_context_texts = []
+        # use rag system to get scores
+        batch_retriever_scores = []
         batch_lm_scores = []
         for example in features:
             query = example.get("query")
             response = example.get("response")
 
-            # retrieve documents (non-differentiable, just for doc selection)
+            # retriever scores - this should participate in gradient computation
             source_nodes = self.rag_system.retrieve(query)
+            retriever_scores = torch.tensor(
+                [n.score for n in source_nodes], requires_grad=True
+            )
 
-            # context texts for later differentiable scoring in compute_loss
-            context_texts = [
-                chunk.node.get_content()["text_content"]
-                for chunk in source_nodes
-            ]
-
-            # lm supervised scores - no gradient needed
+            # lm supervised scores - we don't want these to participate in gradient computation
             lm_scores = []
             with torch.no_grad():
                 for chunk in source_nodes:
@@ -231,16 +226,12 @@ class DataCollatorForLSR(
                     lm_scores.append(lm_score)
                 lm_scores = torch.stack(lm_scores, dim=0)
 
-            batch_queries.append(query)
-            batch_context_texts.append(context_texts)
+            # append to batch
+            batch_retriever_scores.append(retriever_scores)
             batch_lm_scores.append(lm_scores)
 
+        # create torch.Tensors
+        retrieval_scores = torch.stack(batch_retriever_scores, dim=0)
         lm_scores = torch.stack(batch_lm_scores, dim=0)
 
-        return {
-            "queries": batch_queries,
-            "context_texts": batch_context_texts,
-            "lm_scores": lm_scores,
-        }
-
-
+        return {"retrieval_scores": retrieval_scores, "lm_scores": lm_scores}

@@ -110,8 +110,8 @@ class HuggingFaceRAGTrainerManager(BaseRAGTrainerManager):
                 train_dataset: "Dataset",
                 val_dataset: "Dataset",
             ) -> TrainResult:
-                _ = retriever_train_fn()
-                return TrainResult(loss=0)
+                result = retriever_train_fn()
+                return TrainResult(loss=result.loss)
 
             return (
                 federate.trainer.huggingface(train_wrapper),
@@ -132,9 +132,8 @@ class HuggingFaceRAGTrainerManager(BaseRAGTrainerManager):
                 train_dataset: "Dataset",
                 val_dataset: "Dataset",
             ) -> TrainResult:
-                _ = generator_train_fn()
-                # TODO get loss from out
-                return TrainResult(loss=0)
+                result = generator_train_fn()
+                return TrainResult(loss=result.loss)
 
             return (
                 federate.trainer.huggingface(train_wrapper),

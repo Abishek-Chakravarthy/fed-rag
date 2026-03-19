@@ -177,8 +177,9 @@ def test_get_federated_task_retriever(
     out = retriever_trainer(MagicMock(), MagicMock(), MagicMock())
     fl_task = trainer.get_federated_task()
 
-    # assert
-    assert out.loss == 0
+    # assert — train_wrapper now returns actual loss from trainer.train()
+    # TestRetrieverTrainer.train() returns TrainResult(loss=0.42)
+    assert out.loss == 0.42
     assert isinstance(fl_task, HuggingFaceFLTask)
     assert fl_task._trainer_spec == retriever_trainer.__fl_task_trainer_config
 
@@ -201,8 +202,9 @@ def test_get_federated_task_generator(
     out = generator_trainer(MagicMock(), MagicMock(), MagicMock())
     fl_task = trainer.get_federated_task()
 
-    # assert
-    assert out.loss == 0
+    # assert — train_wrapper now returns actual loss from trainer.train()
+    # TestGeneratorTrainer.train() returns TrainResult(loss=0.42)
+    assert out.loss == 0.42
     assert isinstance(fl_task, HuggingFaceFLTask)
     assert fl_task._trainer_spec == generator_trainer.__fl_task_trainer_config
 
