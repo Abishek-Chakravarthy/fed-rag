@@ -44,7 +44,7 @@ from quality_aware_fedavg import QualityAwareFedAvg
 NUM_ROUNDS = 8
 NUM_CLIENTS = 3
 BATCH_SIZE = 8
-LEARNING_RATE = 5e-5
+LEARNING_RATE = 2e-6
 GENERATOR_MODEL = "distilgpt2"
 DATASET_NAME = "nfcorpus"
 MAX_TRAIN = 500 # Limits the training set to 500 query-response pairs.
