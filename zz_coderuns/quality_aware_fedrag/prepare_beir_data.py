@@ -10,6 +10,7 @@ RETRIEVER_MODEL = "sentence-transformers/all-MiniLM-L6-v2" # The model used for 
 MAX_CORPUS_DOCS = 1000 # The maximum number of documents to load into the knowledge store.
 MAX_TRAIN_PAIRS = 500 # The maximum number of training pairs to use.
 MAX_EVAL_PAIRS = 100 # The maximum number of evaluation pairs to use.
+MAX_QUALITY_PROBE_PAIRS = 60 # Shared clean probe pairs used for quality-aware weighting.
 TOP_K = 10 # The number of top results to retrieve.
 SEED = 42 # The seed for reproducibility.
 MAX_RESPONSE_CHARS = 500 # The maximum number of characters to use for the response.
@@ -219,8 +220,11 @@ def create_retriever():
     else:
         device = "cpu"
 
+    # Use separate query/context encoders so federated training updates only the
+    # query tower while the knowledge-store document embeddings remain valid.
     return HFSentenceTransformerRetriever(
-        model_name=RETRIEVER_MODEL,
+        query_model_name=RETRIEVER_MODEL,
+        context_model_name=RETRIEVER_MODEL,
         load_model_kwargs={"device": device},
     )
 
@@ -306,6 +310,7 @@ def setup_dataset(
     dataset_name="nfcorpus",
     max_train=MAX_TRAIN_PAIRS,
     max_eval=MAX_EVAL_PAIRS,
+    max_quality_probe=MAX_QUALITY_PROBE_PAIRS,
     max_docs=MAX_CORPUS_DOCS,
     seed=SEED,
 ):
@@ -316,6 +321,7 @@ def setup_dataset(
         dataset_name (str): Name of the BEIR dataset to use.
         max_train (int): Maximum number of training samples.
         max_eval (int): Maximum number of evaluation samples.
+        max_quality_probe (int): Maximum clean probe pairs reserved for weighting.
         max_docs (int): Maximum documents in the knowledge store.
         seed (int): Seed for random operations.
 
@@ -329,14 +335,20 @@ def setup_dataset(
         query_lookup,
         qrels_ds,
         max_train,
-        max_eval * 5,
+        max_eval * 5 + max_quality_probe,
         seed=seed,
     )
     retriever = create_retriever()
     knowledge_store = build_knowledge_store(doc_lookup, retriever, max_docs)
 
     eval_pairs = filter_eval_pairs_by_store(eval_pairs, knowledge_store)
-    eval_pairs = eval_pairs[:max_eval]
+    quality_probe_pairs = eval_pairs[:max_quality_probe]
+    eval_pairs = eval_pairs[max_quality_probe:max_quality_probe + max_eval]
+
+    print(
+        "  🧪 Clean probe pairs: "
+        f"{len(quality_probe_pairs)} | Held-out eval pairs: {len(eval_pairs)}"
+    )
 
     train_dataset = Dataset.from_dict({
         "query": [p["query"] for p in train_pairs],
@@ -348,6 +360,7 @@ def setup_dataset(
         "knowledge_store": knowledge_store,
         "train_dataset": train_dataset,
         "train_pairs": train_pairs,
+        "quality_probe_pairs": quality_probe_pairs,
         "eval_pairs": eval_pairs,
         "doc_lookup": doc_lookup,
     }

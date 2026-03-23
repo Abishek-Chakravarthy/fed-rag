@@ -145,20 +145,38 @@ class QualityAwareFedAvg(FedAvg):
 
         client_records = []
         for idx, item in enumerate(client_data):
+            fit_metrics = item["fit_metrics"]
             client_records.append(
                 {
                     "cid": item["cid"],
                     "loss": float(losses[idx]),
+                    "train_loss": float(
+                        fit_metrics.get("train_loss", losses[idx])
+                    ),
                     "num_examples": int(item["n_examples"]),
                     "quality_score": float(quality_scores[idx]),
+                    "quality_metric_name": str(
+                        fit_metrics.get("quality_metric_name", "unknown")
+                    ),
+                    "quality_metric_value": float(
+                        fit_metrics.get("quality_metric_value", 0.0)
+                    ),
                     "size_weight": float(size_weights[idx]),
                     "combined_weight": float(combined_weights[idx]),
                     "delta_norm": float(client_delta_norms[idx]),
+                    "probe_size": int(fit_metrics.get("probe_size", 0)),
+                    "probe_mrr": float(fit_metrics.get("probe_mrr", 0.0)),
+                    "probe_recall_at_k": float(
+                        fit_metrics.get("probe_recall_at_k", 0.0)
+                    ),
+                    "probe_ndcg_at_k": float(
+                        fit_metrics.get("probe_ndcg_at_k", 0.0)
+                    ),
                     "loss_source": str(
-                        item["fit_metrics"].get("loss_source", "unknown")
+                        fit_metrics.get("loss_source", "unknown")
                     ),
                     "loss_stage": str(
-                        item["fit_metrics"].get("loss_stage", "unknown")
+                        fit_metrics.get("loss_stage", "unknown")
                     ),
                 }
             )
@@ -203,6 +221,7 @@ class QualityAwareFedAvg(FedAvg):
             summary += (
                 f" | focus_client={focus_record['cid']}"
                 f" loss={focus_record['loss']:.6f}"
+                f" train_loss={focus_record['train_loss']:.6f}"
                 f" weight={focus_record['combined_weight']:.4f}"
             )
         if post_eval_metrics:

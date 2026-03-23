@@ -12,9 +12,6 @@ DEFAULT_ALPHA_VALUES = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
 DEFAULT_SEEDS = [42, 52, 62]
 DEFAULT_NOISE_MODES = [
     "shuffle",
-    "cross_domain",
-    "random_negative",
-    "mixed",
 ]
 DEFAULT_NOISE_RATIOS = [0.7]
 
@@ -364,7 +361,7 @@ def main():
         type=float,
         default=DEFAULT_NOISE_RATIOS,
     )
-    parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument("--rounds", type=int, default=4)
     parser.add_argument("--local-epochs", type=int, default=1)
     parser.add_argument(
         "--force",

@@ -41,18 +41,20 @@ from prepare_beir_data import (
 from quality_aware_fedavg import QualityAwareFedAvg
 
 
-NUM_ROUNDS = 8
+NUM_ROUNDS = 4
 NUM_CLIENTS = 3
 BATCH_SIZE = 8
-LEARNING_RATE = 5e-6
+LEARNING_RATE = 2e-6
 GENERATOR_MODEL = "distilgpt2"
 DATASET_NAME = "nfcorpus"
-MAX_TRAIN = 1500 # Limits the training set to 500 query-response pairs.
-MAX_EVAL = 300 # Limits the evaluation set to 100 query-response pairs.
-MAX_DOCS = 3000 # Limits the knowledge store to 1000 documents.
+MAX_TRAIN = 1500 # Limits the training set to 1500 query-response pairs.
+MAX_EVAL = 300 # Limits the held-out evaluation set to 300 query-response pairs.
+MAX_DOCS = 3000 # Limits the knowledge store to 3000 documents.
+QUALITY_PROBE_SIZE = 60 # Clean probe set used for quality-aware aggregation.
 NOISE_RATIO = 0.7 # 70% of the training data will be corrupted.
 NOISE_MODE = "shuffle" # The type of noise to introduce.
 NOISY_CLIENT_ID = "2" # The client to introduce noise to.
+CLIENT_SPLIT_MODE = "equal"
 NOISY_CLIENT_DATA_FRACTION = 0.33
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_DIR = os.path.join(OUTPUT_DIR, "output_csv_files")
@@ -75,6 +77,7 @@ transformers_logging.set_verbosity_error()
 CLIENT_TRAIN_DATA = {} # A dictionary to hold the training data for each client.
 KNOWLEDGE_STORE = None # The knowledge store for the RAG system.
 EVAL_PAIRS = [] # The evaluation pairs for the RAG system.
+QUALITY_PROBE_PAIRS = [] # Shared clean probe pairs used for client quality scoring.
 DOC_LOOKUP = {} # A dictionary to look up documents in the knowledge store.
 ROUND_METRICS = [] # A list to store the metrics for each round.
 ALPHA = 0.5 # The alpha parameter for the QA-FedAvg algorithm.
@@ -182,11 +185,17 @@ def split_noisy(
     Returns:
         dict: A mapping from client ID to their (potentially corrupted) training pairs.
     """
-    splits = split_unequal_noisy(
-        train_pairs, num_clients,
-        noisy_client=noisy_client,
-        noisy_fraction=NOISY_CLIENT_DATA_FRACTION,
-    )
+    if CLIENT_SPLIT_MODE == "equal":
+        splits = split_iid(train_pairs, num_clients)
+    elif CLIENT_SPLIT_MODE == "unequal":
+        splits = split_unequal_noisy(
+            train_pairs,
+            num_clients,
+            noisy_client=noisy_client,
+            noisy_fraction=NOISY_CLIENT_DATA_FRACTION,
+        )
+    else:
+        raise ValueError(f"Unsupported client split mode: {CLIENT_SPLIT_MODE}")
 
     for cid in sorted(splits.keys()):
         if cid != noisy_client:
@@ -236,12 +245,9 @@ def split_noisy(
 
     corrupted_data = []
     for i in range(num_corrupt):
-        corrupted_data.append(
-            {
-                "query": data[i]["query"],
-                "response": replacement_responses[i],
-            }
-        )
+        pair = dict(data[i])
+        pair["response"] = replacement_responses[i]
+        corrupted_data.append(pair)
     corrupted_data.extend(data[num_corrupt:])
 
     splits[noisy_client] = corrupted_data
@@ -327,11 +333,15 @@ def build_csv_fieldnames(client_ids):
         "noise_mode",
         "noise_ratio",
         "avg_loss",
+        "avg_train_loss",
         "aggregated_delta_norm",
         "aggregated_model_hash",
         "pre_mrr",
         "pre_recall_at_k",
         "pre_ndcg_at_k",
+        "pre_probe_mrr",
+        "pre_probe_recall_at_k",
+        "pre_probe_ndcg_at_k",
         "post_mrr",
         "post_recall_at_k",
         "post_ndcg_at_k",
@@ -340,11 +350,18 @@ def build_csv_fieldnames(client_ids):
         base_fields.extend(
             [
                 f"client_{cid}_loss",
+                f"client_{cid}_train_loss",
                 f"client_{cid}_num_examples",
                 f"client_{cid}_quality_score",
+                f"client_{cid}_quality_metric_name",
+                f"client_{cid}_quality_metric_value",
                 f"client_{cid}_size_weight",
                 f"client_{cid}_weight",
                 f"client_{cid}_delta_norm",
+                f"client_{cid}_probe_size",
+                f"client_{cid}_probe_mrr",
+                f"client_{cid}_probe_recall_at_k",
+                f"client_{cid}_probe_ndcg_at_k",
                 f"client_{cid}_loss_source",
                 f"client_{cid}_loss_stage",
             ]
@@ -392,6 +409,21 @@ def make_post_aggregation_evaluator():
         )
 
     return evaluator
+
+
+def compute_quality_probe_loss(retriever):
+    probe_metrics = evaluate_retriever(
+        retriever,
+        KNOWLEDGE_STORE,
+        QUALITY_PROBE_PAIRS,
+        top_k=TOP_K,
+    )
+    quality_metric_value = (
+        0.5 * probe_metrics.get("mrr", 0.0)
+        + 0.5 * probe_metrics.get("ndcg_at_k", 0.0)
+    )
+    quality_loss = max(1e-8, 1.0 - quality_metric_value)
+    return quality_loss, quality_metric_value, probe_metrics
 
 
 def build_cross_domain_response_pool(
@@ -492,6 +524,7 @@ def write_run_manifest(
     local_epochs: int,
     initial_hash: str,
     pre_metrics: dict,
+    pre_probe_metrics: dict,
     split_summary: dict,
     csv_path: str,
     log_path: str,
@@ -513,21 +546,24 @@ def write_run_manifest(
         "max_train_pairs": MAX_TRAIN,
         "max_eval_pairs": MAX_EVAL,
         "max_corpus_docs": MAX_DOCS,
+        "quality_probe_pairs_count": len(QUALITY_PROBE_PAIRS),
+        "client_split_mode": CLIENT_SPLIT_MODE,
         "top_k": TOP_K,
         "noise_ratio": noise_ratio,
         "noise_mode": noise_mode,
         "noisy_client_id": NOISY_CLIENT_ID,
         "initial_model_hash": initial_hash,
         "pre_metrics": pre_metrics,
+        "pre_probe_metrics": pre_probe_metrics,
         "client_split_summary": split_summary,
         "train_split_hash": hash_jsonable(split_summary),
-        "csv_schema_version": 2,
+        "csv_schema_version": 3,
         "quality_signal": {
             "strategy_metric_key": "loss",
-            "client_metric_source": "HuggingFaceTrainerForLSR.train",
-            "trainer_return_value": "TrainResult(loss=output.training_loss)",
-            "loss_stage": "post_local_training",
-            "objective": "LSR training loss",
+            "client_metric_source": "shared_clean_probe_retrieval",
+            "trainer_return_value": "1 - 0.5 * (probe_mrr + probe_ndcg_at_k)",
+            "loss_stage": "post_local_training_clean_probe",
+            "objective": "clean probe retrieval loss",
         },
     }
     with open(manifest_path, "w", encoding="utf-8") as f:
@@ -655,8 +691,22 @@ def client_fn(cid: str):
 
     def audited_fit(parameters, config):
         weights, num_examples, metrics = original_fit(parameters, config)
-        metrics["loss_source"] = "lsr_training_loss"
-        metrics["loss_stage"] = "post_local_training"
+        train_loss = float(metrics.get("loss", 1.0))
+        quality_loss, quality_metric_value, probe_metrics = compute_quality_probe_loss(
+            retriever
+        )
+        metrics["train_loss"] = train_loss
+        metrics["loss"] = quality_loss
+        metrics["quality_loss"] = quality_loss
+        metrics["quality_metric_name"] = "mean_mrr_ndcg"
+        metrics["quality_metric_value"] = quality_metric_value
+        metrics["probe_size"] = len(QUALITY_PROBE_PAIRS)
+        metrics["probe_mrr"] = probe_metrics.get("mrr", 0.0)
+        metrics["probe_recall_at_k"] = probe_metrics.get("recall_at_k", 0.0)
+        metrics["probe_ndcg_at_k"] = probe_metrics.get("ndcg_at_k", 0.0)
+        metrics["train_loss_source"] = "lsr_training_loss"
+        metrics["loss_source"] = "clean_probe_retrieval"
+        metrics["loss_stage"] = "post_local_training_clean_probe"
         metrics["noise_mode"] = CURRENT_NOISE_MODE
         metrics["logical_cid"] = cid
         return weights, num_examples, metrics
@@ -671,9 +721,15 @@ def weighted_average(metrics: list[Tuple[int, Metrics]]) -> Metrics:
     losses = [num_examples * m["loss"] for num_examples, m in metrics]
     examples = [num_examples for num_examples, _ in metrics]
     avg_loss = sum(losses) / sum(examples)
+    train_losses = [
+        num_examples * float(m.get("train_loss", m["loss"]))
+        for num_examples, m in metrics
+    ]
+    avg_train_loss = sum(train_losses) / sum(examples)
 
     ROUND_METRICS.append({
         "avg_loss": avg_loss,
+        "avg_train_loss": avg_train_loss,
     })
 
     return {"loss": avg_loss}
@@ -688,7 +744,8 @@ def main(
     num_rounds: int = NUM_ROUNDS,
     local_epochs: int = 1,
 ):
-    global CLIENT_TRAIN_DATA, KNOWLEDGE_STORE, EVAL_PAIRS, DOC_LOOKUP, ALPHA
+    global CLIENT_TRAIN_DATA, KNOWLEDGE_STORE, EVAL_PAIRS, QUALITY_PROBE_PAIRS
+    global DOC_LOOKUP, ALPHA
     global CURRENT_SEED, CURRENT_NUM_ROUNDS, CURRENT_LOCAL_EPOCHS
     global CURRENT_NOISE_MODE, NOISE_CONTEXT
 
@@ -730,11 +787,13 @@ def main(
         DATASET_NAME,
         max_train=MAX_TRAIN,
         max_eval=MAX_EVAL,
+        max_quality_probe=QUALITY_PROBE_SIZE,
         max_docs=MAX_DOCS,
         seed=seed,
     )
     KNOWLEDGE_STORE = data["knowledge_store"]
     EVAL_PAIRS = data["eval_pairs"]
+    QUALITY_PROBE_PAIRS = data["quality_probe_pairs"]
     DOC_LOOKUP = data["doc_lookup"]
     NOISE_CONTEXT = {}
     if noise_mode in {"cross_domain", "mixed"}:
@@ -754,11 +813,23 @@ def main(
 
     retriever = data["retriever"]
     pre_metrics = evaluate_retriever(retriever, KNOWLEDGE_STORE, EVAL_PAIRS, top_k=TOP_K)
+    pre_probe_metrics = evaluate_retriever(
+        retriever,
+        KNOWLEDGE_STORE,
+        QUALITY_PROBE_PAIRS,
+        top_k=TOP_K,
+    )
     print(
         "Pre-eval | "
         f"MRR={pre_metrics['mrr']:.4f} | "
         f"Recall@k={pre_metrics['recall_at_k']:.4f} | "
         f"NDCG@k={pre_metrics['ndcg_at_k']:.4f}"
+    )
+    print(
+        "Probe   | "
+        f"MRR={pre_probe_metrics['mrr']:.4f} | "
+        f"Recall@k={pre_probe_metrics['recall_at_k']:.4f} | "
+        f"NDCG@k={pre_probe_metrics['ndcg_at_k']:.4f}"
     )
 
     AcceleratorState._reset_state()
@@ -817,11 +888,15 @@ def main(
                 "noise_mode": noise_mode,
                 "noise_ratio": f"{noise_ratio:.2f}",
                 "avg_loss": f"{qi['aggregated_loss']:.6f}",
+                "avg_train_loss": "",
                 "aggregated_delta_norm": f"{qi['aggregated_delta_norm']:.6f}",
                 "aggregated_model_hash": qi["aggregated_model_hash"],
                 "pre_mrr": f"{pre_metrics['mrr']:.6f}",
                 "pre_recall_at_k": f"{pre_metrics['recall_at_k']:.6f}",
                 "pre_ndcg_at_k": f"{pre_metrics['ndcg_at_k']:.6f}",
+                "pre_probe_mrr": f"{pre_probe_metrics['mrr']:.6f}",
+                "pre_probe_recall_at_k": f"{pre_probe_metrics['recall_at_k']:.6f}",
+                "pre_probe_ndcg_at_k": f"{pre_probe_metrics['ndcg_at_k']:.6f}",
                 "post_mrr": f"{qi['post_eval_metrics'].get('mrr', 0.0):.6f}",
                 "post_recall_at_k": f"{qi['post_eval_metrics'].get('recall_at_k', 0.0):.6f}",
                 "post_ndcg_at_k": f"{qi['post_eval_metrics'].get('ndcg_at_k', 0.0):.6f}",
@@ -829,17 +904,31 @@ def main(
 
             if idx < len(ROUND_METRICS):
                 row["avg_loss"] = f"{ROUND_METRICS[idx]['avg_loss']:.6f}"
+                row["avg_train_loss"] = f"{ROUND_METRICS[idx]['avg_train_loss']:.6f}"
 
             for cid in client_ids:
                 record = client_records.get(cid)
                 if record is None:
                     continue
                 row[f"client_{cid}_loss"] = f"{record['loss']:.6f}"
+                row[f"client_{cid}_train_loss"] = f"{record['train_loss']:.6f}"
                 row[f"client_{cid}_num_examples"] = str(record["num_examples"])
                 row[f"client_{cid}_quality_score"] = f"{record['quality_score']:.6f}"
+                row[f"client_{cid}_quality_metric_name"] = record["quality_metric_name"]
+                row[f"client_{cid}_quality_metric_value"] = (
+                    f"{record['quality_metric_value']:.6f}"
+                )
                 row[f"client_{cid}_size_weight"] = f"{record['size_weight']:.6f}"
                 row[f"client_{cid}_weight"] = f"{record['combined_weight']:.6f}"
                 row[f"client_{cid}_delta_norm"] = f"{record['delta_norm']:.6f}"
+                row[f"client_{cid}_probe_size"] = str(record["probe_size"])
+                row[f"client_{cid}_probe_mrr"] = f"{record['probe_mrr']:.6f}"
+                row[f"client_{cid}_probe_recall_at_k"] = (
+                    f"{record['probe_recall_at_k']:.6f}"
+                )
+                row[f"client_{cid}_probe_ndcg_at_k"] = (
+                    f"{record['probe_ndcg_at_k']:.6f}"
+                )
                 row[f"client_{cid}_loss_source"] = record["loss_source"]
                 row[f"client_{cid}_loss_stage"] = record["loss_stage"]
             writer.writerow(row)
@@ -861,6 +950,7 @@ def main(
         local_epochs=local_epochs,
         initial_hash=initial_hash,
         pre_metrics=pre_metrics,
+        pre_probe_metrics=pre_probe_metrics,
         split_summary=split_summary,
         csv_path=csv_path,
         log_path=log_file,
