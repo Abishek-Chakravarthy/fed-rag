@@ -44,12 +44,12 @@ from quality_aware_fedavg import QualityAwareFedAvg
 NUM_ROUNDS = 8
 NUM_CLIENTS = 3
 BATCH_SIZE = 8
-LEARNING_RATE = 2e-6
+LEARNING_RATE = 5e-6
 GENERATOR_MODEL = "distilgpt2"
 DATASET_NAME = "nfcorpus"
-MAX_TRAIN = 500 # Limits the training set to 500 query-response pairs.
-MAX_EVAL = 100 # Limits the evaluation set to 100 query-response pairs.
-MAX_DOCS = 1000 # Limits the knowledge store to 1000 documents.
+MAX_TRAIN = 1500 # Limits the training set to 500 query-response pairs.
+MAX_EVAL = 300 # Limits the evaluation set to 100 query-response pairs.
+MAX_DOCS = 3000 # Limits the knowledge store to 1000 documents.
 NOISE_RATIO = 0.7 # 70% of the training data will be corrupted.
 NOISE_MODE = "shuffle" # The type of noise to introduce.
 NOISY_CLIENT_ID = "2" # The client to introduce noise to.
