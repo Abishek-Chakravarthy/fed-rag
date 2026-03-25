@@ -10,7 +10,7 @@ RETRIEVER_MODEL = "sentence-transformers/all-MiniLM-L6-v2" # The model used for 
 MAX_CORPUS_DOCS = 1000 # The maximum number of documents to load into the knowledge store.
 MAX_TRAIN_PAIRS = 500 # The maximum number of training pairs to use.
 MAX_EVAL_PAIRS = 100 # The maximum number of evaluation pairs to use.
-MAX_QUALITY_PROBE_PAIRS = 60 # Shared clean probe pairs used for quality-aware weighting.
+MAX_QUALITY_PROBE_PAIRS = 240 # Shared clean comparison pairs used for quality-aware weighting.
 TOP_K = 10 # The number of top results to retrieve.
 SEED = 42 # The seed for reproducibility.
 MAX_RESPONSE_CHARS = 500 # The maximum number of characters to use for the response.
@@ -321,7 +321,7 @@ def setup_dataset(
         dataset_name (str): Name of the BEIR dataset to use.
         max_train (int): Maximum number of training samples.
         max_eval (int): Maximum number of evaluation samples.
-        max_quality_probe (int): Maximum clean probe pairs reserved for weighting.
+    max_quality_probe (int): Maximum shared clean comparison pairs reserved for weighting.
         max_docs (int): Maximum documents in the knowledge store.
         seed (int): Seed for random operations.
 
@@ -346,7 +346,7 @@ def setup_dataset(
     eval_pairs = eval_pairs[max_quality_probe:max_quality_probe + max_eval]
 
     print(
-        "  🧪 Clean probe pairs: "
+        "  🧪 Shared comparison pairs: "
         f"{len(quality_probe_pairs)} | Held-out eval pairs: {len(eval_pairs)}"
     )
 

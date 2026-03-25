@@ -172,6 +172,18 @@ class QualityAwareFedAvg(FedAvg):
                     "probe_ndcg_at_k": float(
                         fit_metrics.get("probe_ndcg_at_k", 0.0)
                     ),
+                    "shared_quality_size": int(
+                        fit_metrics.get("shared_quality_size", 0)
+                    ),
+                    "shared_quality_mrr": float(
+                        fit_metrics.get("shared_quality_mrr", 0.0)
+                    ),
+                    "shared_quality_recall_at_k": float(
+                        fit_metrics.get("shared_quality_recall_at_k", 0.0)
+                    ),
+                    "shared_quality_ndcg_at_k": float(
+                        fit_metrics.get("shared_quality_ndcg_at_k", 0.0)
+                    ),
                     "loss_source": str(
                         fit_metrics.get("loss_source", "unknown")
                     ),

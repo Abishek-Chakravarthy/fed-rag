@@ -76,6 +76,7 @@ transformers_logging.set_verbosity_error()
 
 CLIENT_TRAIN_DATA = {} # A dictionary to hold the training data for each client.
 CLIENT_QUALITY_HOLDOUTS = {} # Clean per-client holdouts used for quality scoring.
+SHARED_QUALITY_PAIRS = [] # Shared clean comparison set used for cross-client weighting.
 KNOWLEDGE_STORE = None # The knowledge store for the RAG system.
 EVAL_PAIRS = [] # The evaluation pairs for the RAG system.
 DOC_LOOKUP = {} # A dictionary to look up documents in the knowledge store.
@@ -379,6 +380,9 @@ def build_csv_fieldnames(client_ids):
         "pre_probe_mrr",
         "pre_probe_recall_at_k",
         "pre_probe_ndcg_at_k",
+        "pre_shared_quality_mrr",
+        "pre_shared_quality_recall_at_k",
+        "pre_shared_quality_ndcg_at_k",
         "post_mrr",
         "post_recall_at_k",
         "post_ndcg_at_k",
@@ -399,6 +403,10 @@ def build_csv_fieldnames(client_ids):
                 f"client_{cid}_probe_mrr",
                 f"client_{cid}_probe_recall_at_k",
                 f"client_{cid}_probe_ndcg_at_k",
+                f"client_{cid}_shared_quality_size",
+                f"client_{cid}_shared_quality_mrr",
+                f"client_{cid}_shared_quality_recall_at_k",
+                f"client_{cid}_shared_quality_ndcg_at_k",
                 f"client_{cid}_loss_source",
                 f"client_{cid}_loss_stage",
             ]
@@ -455,20 +463,29 @@ def flatten_holdout_pairs(holdout_splits):
     return pairs
 
 
-def compute_quality_holdout_loss(retriever, cid: str):
+def compute_quality_loss(retriever):
+    comparison_metrics = evaluate_retriever(
+        retriever,
+        KNOWLEDGE_STORE,
+        SHARED_QUALITY_PAIRS,
+        top_k=TOP_K,
+    )
+    quality_metric_value = (
+        0.5 * comparison_metrics.get("mrr", 0.0)
+        + 0.5 * comparison_metrics.get("ndcg_at_k", 0.0)
+    )
+    quality_loss = float(-np.log(max(quality_metric_value, 1e-8)))
+    return quality_loss, quality_metric_value, comparison_metrics
+
+
+def compute_client_holdout_metrics(retriever, cid: str):
     holdout_pairs = CLIENT_QUALITY_HOLDOUTS[cid]
-    holdout_metrics = evaluate_retriever(
+    return evaluate_retriever(
         retriever,
         KNOWLEDGE_STORE,
         holdout_pairs,
         top_k=TOP_K,
     )
-    quality_metric_value = (
-        0.5 * holdout_metrics.get("mrr", 0.0)
-        + 0.5 * holdout_metrics.get("ndcg_at_k", 0.0)
-    )
-    quality_loss = float(-np.log(max(quality_metric_value, 1e-8)))
-    return quality_loss, quality_metric_value, holdout_metrics
 
 
 def build_cross_domain_response_pool(
@@ -607,7 +624,8 @@ def write_run_manifest(
     local_epochs: int,
     initial_hash: str,
     pre_metrics: dict,
-    pre_probe_metrics: dict,
+    pre_shared_quality_metrics: dict,
+    pre_holdout_metrics: dict,
     split_summary: dict,
     csv_path: str,
     log_path: str,
@@ -629,6 +647,7 @@ def write_run_manifest(
         "max_train_pairs": MAX_TRAIN,
         "max_eval_pairs": MAX_EVAL,
         "max_corpus_docs": MAX_DOCS,
+        "shared_quality_pairs_count": len(SHARED_QUALITY_PAIRS),
         "quality_holdout_ratio": QUALITY_HOLDOUT_RATIO,
         "client_split_mode": CLIENT_SPLIT_MODE,
         "top_k": TOP_K,
@@ -637,16 +656,17 @@ def write_run_manifest(
         "noisy_client_id": NOISY_CLIENT_ID,
         "initial_model_hash": initial_hash,
         "pre_metrics": pre_metrics,
-        "pre_probe_metrics": pre_probe_metrics,
+        "pre_shared_quality_metrics": pre_shared_quality_metrics,
+        "pre_holdout_metrics": pre_holdout_metrics,
         "client_split_summary": split_summary,
         "train_split_hash": hash_jsonable(split_summary),
         "csv_schema_version": 3,
         "quality_signal": {
             "strategy_metric_key": "loss",
-            "client_metric_source": "client_specific_clean_holdout_retrieval",
-            "trainer_return_value": "-log(0.5 * (holdout_mrr + holdout_ndcg_at_k) + eps)",
-            "loss_stage": "post_local_training_clean_holdout",
-            "objective": "log-scaled clean holdout retrieval loss",
+            "client_metric_source": "shared_clean_comparison_retrieval",
+            "trainer_return_value": "-log(0.5 * (shared_mrr + shared_ndcg_at_k) + eps)",
+            "loss_stage": "post_local_training_shared_comparison",
+            "objective": "log-scaled shared comparison retrieval loss",
         },
     }
     with open(manifest_path, "w", encoding="utf-8") as f:
@@ -775,22 +795,26 @@ def client_fn(cid: str):
     def audited_fit(parameters, config):
         weights, num_examples, metrics = original_fit(parameters, config)
         train_loss = float(metrics.get("loss", 1.0))
-        quality_loss, quality_metric_value, holdout_metrics = compute_quality_holdout_loss(
-            retriever,
-            cid,
+        quality_loss, quality_metric_value, comparison_metrics = compute_quality_loss(
+            retriever
         )
+        holdout_metrics = compute_client_holdout_metrics(retriever, cid)
         metrics["train_loss"] = train_loss
         metrics["loss"] = quality_loss
         metrics["quality_loss"] = quality_loss
-        metrics["quality_metric_name"] = "log_mean_mrr_ndcg_holdout"
+        metrics["quality_metric_name"] = "log_mean_mrr_ndcg_shared"
         metrics["quality_metric_value"] = quality_metric_value
         metrics["probe_size"] = len(CLIENT_QUALITY_HOLDOUTS[cid])
         metrics["probe_mrr"] = holdout_metrics.get("mrr", 0.0)
         metrics["probe_recall_at_k"] = holdout_metrics.get("recall_at_k", 0.0)
         metrics["probe_ndcg_at_k"] = holdout_metrics.get("ndcg_at_k", 0.0)
+        metrics["shared_quality_size"] = len(SHARED_QUALITY_PAIRS)
+        metrics["shared_quality_mrr"] = comparison_metrics.get("mrr", 0.0)
+        metrics["shared_quality_recall_at_k"] = comparison_metrics.get("recall_at_k", 0.0)
+        metrics["shared_quality_ndcg_at_k"] = comparison_metrics.get("ndcg_at_k", 0.0)
         metrics["train_loss_source"] = "lsr_training_loss"
-        metrics["loss_source"] = "client_clean_holdout_retrieval"
-        metrics["loss_stage"] = "post_local_training_clean_holdout"
+        metrics["loss_source"] = "shared_clean_comparison_retrieval"
+        metrics["loss_stage"] = "post_local_training_shared_comparison"
         metrics["noise_mode"] = CURRENT_NOISE_MODE
         metrics["logical_cid"] = cid
         return weights, num_examples, metrics
@@ -828,7 +852,8 @@ def main(
     num_rounds: int = NUM_ROUNDS,
     local_epochs: int = 1,
 ):
-    global CLIENT_TRAIN_DATA, CLIENT_QUALITY_HOLDOUTS, KNOWLEDGE_STORE, EVAL_PAIRS
+    global CLIENT_TRAIN_DATA, CLIENT_QUALITY_HOLDOUTS, SHARED_QUALITY_PAIRS
+    global KNOWLEDGE_STORE, EVAL_PAIRS
     global DOC_LOOKUP, ALPHA, REFERENCE_RETRIEVER
     global CURRENT_SEED, CURRENT_NUM_ROUNDS, CURRENT_LOCAL_EPOCHS
     global CURRENT_NOISE_MODE, NOISE_CONTEXT
@@ -876,6 +901,7 @@ def main(
     )
     KNOWLEDGE_STORE = data["knowledge_store"]
     EVAL_PAIRS = data["eval_pairs"]
+    SHARED_QUALITY_PAIRS = data["quality_probe_pairs"]
     DOC_LOOKUP = data["doc_lookup"]
     REFERENCE_RETRIEVER = data["retriever"]
     NOISE_CONTEXT = {}
@@ -899,11 +925,16 @@ def main(
 
     retriever = REFERENCE_RETRIEVER
     pre_metrics = evaluate_retriever(retriever, KNOWLEDGE_STORE, EVAL_PAIRS, top_k=TOP_K)
-    combined_holdout_pairs = flatten_holdout_pairs(CLIENT_QUALITY_HOLDOUTS)
     pre_probe_metrics = evaluate_retriever(
         retriever,
         KNOWLEDGE_STORE,
-        combined_holdout_pairs,
+        flatten_holdout_pairs(CLIENT_QUALITY_HOLDOUTS),
+        top_k=TOP_K,
+    )
+    pre_shared_quality_metrics = evaluate_retriever(
+        retriever,
+        KNOWLEDGE_STORE,
+        SHARED_QUALITY_PAIRS,
         top_k=TOP_K,
     )
     print(
@@ -917,6 +948,12 @@ def main(
         f"MRR={pre_probe_metrics['mrr']:.4f} | "
         f"Recall@k={pre_probe_metrics['recall_at_k']:.4f} | "
         f"NDCG@k={pre_probe_metrics['ndcg_at_k']:.4f}"
+    )
+    print(
+        "Shared  | "
+        f"MRR={pre_shared_quality_metrics['mrr']:.4f} | "
+        f"Recall@k={pre_shared_quality_metrics['recall_at_k']:.4f} | "
+        f"NDCG@k={pre_shared_quality_metrics['ndcg_at_k']:.4f}"
     )
 
     AcceleratorState._reset_state()
@@ -984,6 +1021,9 @@ def main(
                 "pre_probe_mrr": f"{pre_probe_metrics['mrr']:.6f}",
                 "pre_probe_recall_at_k": f"{pre_probe_metrics['recall_at_k']:.6f}",
                 "pre_probe_ndcg_at_k": f"{pre_probe_metrics['ndcg_at_k']:.6f}",
+                "pre_shared_quality_mrr": f"{pre_shared_quality_metrics['mrr']:.6f}",
+                "pre_shared_quality_recall_at_k": f"{pre_shared_quality_metrics['recall_at_k']:.6f}",
+                "pre_shared_quality_ndcg_at_k": f"{pre_shared_quality_metrics['ndcg_at_k']:.6f}",
                 "post_mrr": f"{qi['post_eval_metrics'].get('mrr', 0.0):.6f}",
                 "post_recall_at_k": f"{qi['post_eval_metrics'].get('recall_at_k', 0.0):.6f}",
                 "post_ndcg_at_k": f"{qi['post_eval_metrics'].get('ndcg_at_k', 0.0):.6f}",
@@ -1016,6 +1056,16 @@ def main(
                 row[f"client_{cid}_probe_ndcg_at_k"] = (
                     f"{record['probe_ndcg_at_k']:.6f}"
                 )
+                row[f"client_{cid}_shared_quality_size"] = str(record["shared_quality_size"])
+                row[f"client_{cid}_shared_quality_mrr"] = (
+                    f"{record['shared_quality_mrr']:.6f}"
+                )
+                row[f"client_{cid}_shared_quality_recall_at_k"] = (
+                    f"{record['shared_quality_recall_at_k']:.6f}"
+                )
+                row[f"client_{cid}_shared_quality_ndcg_at_k"] = (
+                    f"{record['shared_quality_ndcg_at_k']:.6f}"
+                )
                 row[f"client_{cid}_loss_source"] = record["loss_source"]
                 row[f"client_{cid}_loss_stage"] = record["loss_stage"]
             writer.writerow(row)
@@ -1037,7 +1087,8 @@ def main(
         local_epochs=local_epochs,
         initial_hash=initial_hash,
         pre_metrics=pre_metrics,
-        pre_probe_metrics=pre_probe_metrics,
+        pre_shared_quality_metrics=pre_shared_quality_metrics,
+        pre_holdout_metrics=pre_probe_metrics,
         split_summary=split_summary,
         csv_path=csv_path,
         log_path=log_file,
