@@ -50,12 +50,12 @@ DATASET_NAME = "nfcorpus"
 MAX_TRAIN = 1500 # Limits the training set to 1500 query-response pairs.
 MAX_EVAL = 300 # Limits the held-out evaluation set to 300 query-response pairs.
 MAX_DOCS = 3000 # Limits the knowledge store to 3000 documents.
-QUALITY_PROBE_SIZE = 60 # Clean probe set used for quality-aware aggregation.
-NOISE_RATIO = 0.7 # 70% of the training data will be corrupted.
-NOISE_MODE = "shuffle" # The type of noise to introduce.
+QUALITY_HOLDOUT_RATIO = 0.2 # Fraction of each client's clean data reserved for validation.
+NOISE_RATIO = 0.8 # 80% of the noisy client's train split will be corrupted.
+NOISE_MODE = "hard_negative" # The type of noise to introduce.
 NOISY_CLIENT_ID = "2" # The client to introduce noise to.
-CLIENT_SPLIT_MODE = "equal"
-NOISY_CLIENT_DATA_FRACTION = 0.33
+CLIENT_SPLIT_MODE = "unequal"
+NOISY_CLIENT_DATA_FRACTION = 0.4
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_DIR = os.path.join(OUTPUT_DIR, "output_csv_files")
 LOG_DIR = os.path.join(OUTPUT_DIR, "output_log_files")
@@ -75,9 +75,9 @@ transformers_logging.set_verbosity_error()
 
 
 CLIENT_TRAIN_DATA = {} # A dictionary to hold the training data for each client.
+CLIENT_QUALITY_HOLDOUTS = {} # Clean per-client holdouts used for quality scoring.
 KNOWLEDGE_STORE = None # The knowledge store for the RAG system.
 EVAL_PAIRS = [] # The evaluation pairs for the RAG system.
-QUALITY_PROBE_PAIRS = [] # Shared clean probe pairs used for client quality scoring.
 DOC_LOOKUP = {} # A dictionary to look up documents in the knowledge store.
 ROUND_METRICS = [] # A list to store the metrics for each round.
 ALPHA = 0.5 # The alpha parameter for the QA-FedAvg algorithm.
@@ -86,6 +86,7 @@ CURRENT_NUM_ROUNDS = NUM_ROUNDS
 CURRENT_LOCAL_EPOCHS = 1
 CURRENT_NOISE_MODE = NOISE_MODE # A global tracker for how the "bad" client is corrupting its data (e.g., shuffle, cross_domain, etc.)
 NOISE_CONTEXT = {} # A global dictionary to hold extra data needed for certain noise modes (e.g., the pool of cross-domain documents).
+REFERENCE_RETRIEVER = None # Frozen reference retriever used to construct hard in-domain negatives.
 
 
 def get_runtime_device() -> str:
@@ -165,6 +166,31 @@ def split_unequal_noisy(
     return splits
 
 
+def reserve_clean_holdouts(
+    splits,
+    *,
+    holdout_ratio: float = QUALITY_HOLDOUT_RATIO,
+):
+    train_splits = {}
+    holdout_splits = {}
+
+    for cid, pairs in sorted(splits.items(), key=lambda item: client_sort_key(item[0])):
+        pairs_copy = pairs.copy()
+        rng = random.Random(CURRENT_SEED + 1000 + int(cid))
+        rng.shuffle(pairs_copy)
+
+        if len(pairs_copy) <= 2:
+            holdout_count = 1 if len(pairs_copy) > 1 else 0
+        else:
+            holdout_count = max(1, int(len(pairs_copy) * holdout_ratio))
+            holdout_count = min(holdout_count, len(pairs_copy) - 1)
+
+        holdout_splits[cid] = pairs_copy[:holdout_count]
+        train_splits[cid] = pairs_copy[holdout_count:]
+
+    return train_splits, holdout_splits
+
+
 def split_noisy(
     train_pairs,
     num_clients,
@@ -183,7 +209,7 @@ def split_noisy(
         noise_mode (str): The method of corruption ('shuffle', 'cross_domain', 'random_negative', or 'mixed').
 
     Returns:
-        dict: A mapping from client ID to their (potentially corrupted) training pairs.
+        tuple[dict, dict]: Training splits and clean validation holdouts.
     """
     if CLIENT_SPLIT_MODE == "equal":
         splits = split_iid(train_pairs, num_clients)
@@ -197,11 +223,16 @@ def split_noisy(
     else:
         raise ValueError(f"Unsupported client split mode: {CLIENT_SPLIT_MODE}")
 
-    for cid in sorted(splits.keys()):
-        if cid != noisy_client:
-            print(f"  Client {cid}: {len(splits[cid])} pairs (CLEAN ✅)")
+    train_splits, holdout_splits = reserve_clean_holdouts(splits)
 
-    data = splits[noisy_client].copy()
+    for cid in sorted(train_splits.keys()):
+        if cid != noisy_client:
+            print(
+                f"  Client {cid}: {len(train_splits[cid])} train + "
+                f"{len(holdout_splits[cid])} holdout (CLEAN ✅)"
+            )
+
+    data = train_splits[noisy_client].copy()
     num_corrupt = int(len(data) * noise_ratio)
 
     rng = random.Random(CURRENT_SEED + 999)
@@ -210,6 +241,11 @@ def split_noisy(
 
     if noise_mode == "shuffle":
         replacement_responses = deranged_shuffle(original_responses, rng)
+    elif noise_mode == "hard_negative":
+        replacement_responses = sample_hard_negative_responses(
+            pairs=target_slice,
+            rng=rng,
+        )
     elif noise_mode == "cross_domain":
         pool = NOISE_CONTEXT.get("cross_domain_pool", [])
         if not pool:
@@ -250,13 +286,14 @@ def split_noisy(
         corrupted_data.append(pair)
     corrupted_data.extend(data[num_corrupt:])
 
-    splits[noisy_client] = corrupted_data
+    train_splits[noisy_client] = corrupted_data
     print(
-        f"  Client {noisy_client}: {len(data)} pairs — ⚠️  "
+        f"  Client {noisy_client}: {len(data)} train + "
+        f"{len(holdout_splits[noisy_client])} holdout — ⚠️  "
         f"{num_corrupt} CORRUPTED ({noise_ratio*100:.0f}% noise, mode={noise_mode})"
     )
 
-    return splits
+    return train_splits, holdout_splits
 
 
 def hash_weights(model):
@@ -411,19 +448,27 @@ def make_post_aggregation_evaluator():
     return evaluator
 
 
-def compute_quality_probe_loss(retriever):
-    probe_metrics = evaluate_retriever(
+def flatten_holdout_pairs(holdout_splits):
+    pairs = []
+    for cid in sorted(holdout_splits.keys(), key=client_sort_key):
+        pairs.extend(holdout_splits[cid])
+    return pairs
+
+
+def compute_quality_holdout_loss(retriever, cid: str):
+    holdout_pairs = CLIENT_QUALITY_HOLDOUTS[cid]
+    holdout_metrics = evaluate_retriever(
         retriever,
         KNOWLEDGE_STORE,
-        QUALITY_PROBE_PAIRS,
+        holdout_pairs,
         top_k=TOP_K,
     )
     quality_metric_value = (
-        0.5 * probe_metrics.get("mrr", 0.0)
-        + 0.5 * probe_metrics.get("ndcg_at_k", 0.0)
+        0.5 * holdout_metrics.get("mrr", 0.0)
+        + 0.5 * holdout_metrics.get("ndcg_at_k", 0.0)
     )
-    quality_loss = max(1e-8, 1.0 - quality_metric_value)
-    return quality_loss, quality_metric_value, probe_metrics
+    quality_loss = float(-np.log(max(quality_metric_value, 1e-8)))
+    return quality_loss, quality_metric_value, holdout_metrics
 
 
 def build_cross_domain_response_pool(
@@ -489,6 +534,44 @@ def sample_random_negative_responses(
     return negatives
 
 
+def sample_hard_negative_responses(
+    *,
+    pairs: list[dict],
+    rng: random.Random,
+):
+    if REFERENCE_RETRIEVER is None:
+        raise ValueError("Hard-negative noise requested before reference retriever was initialized.")
+
+    responses = []
+    for pair in pairs:
+        query_emb = REFERENCE_RETRIEVER.encode_query(pair["query"])[0].tolist()
+        results = KNOWLEDGE_STORE.retrieve(query_emb, top_k=max(TOP_K * 3, 30))
+        candidates = []
+        for _score, node in results:
+            doc_id = str(node.metadata.get("doc_id", ""))
+            text = str(node.text_content)[:500]
+            if doc_id == str(pair.get("doc_id", "")):
+                continue
+            if text == pair["response"]:
+                continue
+            candidates.append(text)
+            if len(candidates) >= 5:
+                break
+
+        if candidates:
+            responses.append(rng.choice(candidates))
+        else:
+            fallback = sample_random_negative_responses(
+                count=1,
+                rng=rng,
+                doc_lookup=DOC_LOOKUP,
+                original_responses=[pair["response"]],
+            )[0]
+            responses.append(fallback)
+
+    return responses
+
+
 def deranged_shuffle(values: list[str], rng: random.Random) -> list[str]:
     """
     Shuffles a list such that no element remains in its original position (a derangement).
@@ -546,7 +629,7 @@ def write_run_manifest(
         "max_train_pairs": MAX_TRAIN,
         "max_eval_pairs": MAX_EVAL,
         "max_corpus_docs": MAX_DOCS,
-        "quality_probe_pairs_count": len(QUALITY_PROBE_PAIRS),
+        "quality_holdout_ratio": QUALITY_HOLDOUT_RATIO,
         "client_split_mode": CLIENT_SPLIT_MODE,
         "top_k": TOP_K,
         "noise_ratio": noise_ratio,
@@ -560,10 +643,10 @@ def write_run_manifest(
         "csv_schema_version": 3,
         "quality_signal": {
             "strategy_metric_key": "loss",
-            "client_metric_source": "shared_clean_probe_retrieval",
-            "trainer_return_value": "1 - 0.5 * (probe_mrr + probe_ndcg_at_k)",
-            "loss_stage": "post_local_training_clean_probe",
-            "objective": "clean probe retrieval loss",
+            "client_metric_source": "client_specific_clean_holdout_retrieval",
+            "trainer_return_value": "-log(0.5 * (holdout_mrr + holdout_ndcg_at_k) + eps)",
+            "loss_stage": "post_local_training_clean_holdout",
+            "objective": "log-scaled clean holdout retrieval loss",
         },
     }
     with open(manifest_path, "w", encoding="utf-8") as f:
@@ -692,21 +775,22 @@ def client_fn(cid: str):
     def audited_fit(parameters, config):
         weights, num_examples, metrics = original_fit(parameters, config)
         train_loss = float(metrics.get("loss", 1.0))
-        quality_loss, quality_metric_value, probe_metrics = compute_quality_probe_loss(
-            retriever
+        quality_loss, quality_metric_value, holdout_metrics = compute_quality_holdout_loss(
+            retriever,
+            cid,
         )
         metrics["train_loss"] = train_loss
         metrics["loss"] = quality_loss
         metrics["quality_loss"] = quality_loss
-        metrics["quality_metric_name"] = "mean_mrr_ndcg"
+        metrics["quality_metric_name"] = "log_mean_mrr_ndcg_holdout"
         metrics["quality_metric_value"] = quality_metric_value
-        metrics["probe_size"] = len(QUALITY_PROBE_PAIRS)
-        metrics["probe_mrr"] = probe_metrics.get("mrr", 0.0)
-        metrics["probe_recall_at_k"] = probe_metrics.get("recall_at_k", 0.0)
-        metrics["probe_ndcg_at_k"] = probe_metrics.get("ndcg_at_k", 0.0)
+        metrics["probe_size"] = len(CLIENT_QUALITY_HOLDOUTS[cid])
+        metrics["probe_mrr"] = holdout_metrics.get("mrr", 0.0)
+        metrics["probe_recall_at_k"] = holdout_metrics.get("recall_at_k", 0.0)
+        metrics["probe_ndcg_at_k"] = holdout_metrics.get("ndcg_at_k", 0.0)
         metrics["train_loss_source"] = "lsr_training_loss"
-        metrics["loss_source"] = "clean_probe_retrieval"
-        metrics["loss_stage"] = "post_local_training_clean_probe"
+        metrics["loss_source"] = "client_clean_holdout_retrieval"
+        metrics["loss_stage"] = "post_local_training_clean_holdout"
         metrics["noise_mode"] = CURRENT_NOISE_MODE
         metrics["logical_cid"] = cid
         return weights, num_examples, metrics
@@ -744,8 +828,8 @@ def main(
     num_rounds: int = NUM_ROUNDS,
     local_epochs: int = 1,
 ):
-    global CLIENT_TRAIN_DATA, KNOWLEDGE_STORE, EVAL_PAIRS, QUALITY_PROBE_PAIRS
-    global DOC_LOOKUP, ALPHA
+    global CLIENT_TRAIN_DATA, CLIENT_QUALITY_HOLDOUTS, KNOWLEDGE_STORE, EVAL_PAIRS
+    global DOC_LOOKUP, ALPHA, REFERENCE_RETRIEVER
     global CURRENT_SEED, CURRENT_NUM_ROUNDS, CURRENT_LOCAL_EPOCHS
     global CURRENT_NOISE_MODE, NOISE_CONTEXT
 
@@ -787,14 +871,13 @@ def main(
         DATASET_NAME,
         max_train=MAX_TRAIN,
         max_eval=MAX_EVAL,
-        max_quality_probe=QUALITY_PROBE_SIZE,
         max_docs=MAX_DOCS,
         seed=seed,
     )
     KNOWLEDGE_STORE = data["knowledge_store"]
     EVAL_PAIRS = data["eval_pairs"]
-    QUALITY_PROBE_PAIRS = data["quality_probe_pairs"]
     DOC_LOOKUP = data["doc_lookup"]
+    REFERENCE_RETRIEVER = data["retriever"]
     NOISE_CONTEXT = {}
     if noise_mode in {"cross_domain", "mixed"}:
         NOISE_CONTEXT["cross_domain_pool"] = build_cross_domain_response_pool(
@@ -802,21 +885,25 @@ def main(
         )
 
     print(f"\nSplit train pairs across {NUM_CLIENTS} clients")
-    CLIENT_TRAIN_DATA = split_noisy(
+    CLIENT_TRAIN_DATA, CLIENT_QUALITY_HOLDOUTS = split_noisy(
         data["train_pairs"],
         NUM_CLIENTS,
         noise_ratio=noise_ratio,
         noisy_client=NOISY_CLIENT_ID,
         noise_mode=noise_mode,
     )
-    split_summary = build_split_summary(CLIENT_TRAIN_DATA)
+    split_summary = {
+        "train": build_split_summary(CLIENT_TRAIN_DATA),
+        "holdout": build_split_summary(CLIENT_QUALITY_HOLDOUTS),
+    }
 
-    retriever = data["retriever"]
+    retriever = REFERENCE_RETRIEVER
     pre_metrics = evaluate_retriever(retriever, KNOWLEDGE_STORE, EVAL_PAIRS, top_k=TOP_K)
+    combined_holdout_pairs = flatten_holdout_pairs(CLIENT_QUALITY_HOLDOUTS)
     pre_probe_metrics = evaluate_retriever(
         retriever,
         KNOWLEDGE_STORE,
-        QUALITY_PROBE_PAIRS,
+        combined_holdout_pairs,
         top_k=TOP_K,
     )
     print(
@@ -826,7 +913,7 @@ def main(
         f"NDCG@k={pre_metrics['ndcg_at_k']:.4f}"
     )
     print(
-        "Probe   | "
+        "Holdout | "
         f"MRR={pre_probe_metrics['mrr']:.4f} | "
         f"Recall@k={pre_probe_metrics['recall_at_k']:.4f} | "
         f"NDCG@k={pre_probe_metrics['ndcg_at_k']:.4f}"
@@ -988,7 +1075,7 @@ if __name__ == "__main__":
         "--noise-mode",
         type=str,
         default=NOISE_MODE,
-        choices=["shuffle", "cross_domain", "random_negative", "mixed"],
+        choices=["shuffle", "hard_negative", "cross_domain", "random_negative", "mixed"],
         help="How to corrupt the noisy client's positives",
     )
     parser.add_argument(

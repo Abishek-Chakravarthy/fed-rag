@@ -8,12 +8,12 @@ import sys
 import time
 
 
-DEFAULT_ALPHA_VALUES = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+DEFAULT_ALPHA_VALUES = [0.0, 0.3, 0.7, 1.0]
 DEFAULT_SEEDS = [42, 52, 62]
 DEFAULT_NOISE_MODES = [
-    "shuffle",
+    "hard_negative",
 ]
-DEFAULT_NOISE_RATIOS = [0.7]
+DEFAULT_NOISE_RATIOS = [0.8]
 
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_DIR = os.path.join(OUTPUT_DIR, "output_csv_files")
