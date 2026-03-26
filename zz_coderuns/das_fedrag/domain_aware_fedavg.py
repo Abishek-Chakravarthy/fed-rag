@@ -41,6 +41,7 @@ class DomainAwareFedAvg(FedAvg):
         self.best_post_eval_metrics: dict[str, float] = {}
         self.last_selection_map: dict[str, bool] = {}
         self.last_selected_cids: list[str] = []
+        self.proxy_to_logical_cid: dict[str, str] = {}
 
         if self.initial_parameters is not None:
             self.last_global_ndarrays = parameters_to_ndarrays(
@@ -78,15 +79,28 @@ class DomainAwareFedAvg(FedAvg):
             ) + 1e-12
         return False
 
-    def _select_clients(self, available_cids: list[str]) -> tuple[list[str], dict[str, bool]]:
+    def _select_clients(
+        self, available_cids: list[str]
+    ) -> tuple[list[str], dict[str, bool], dict[str, str]]:
         scored = []
+        cid_aliases = {}
+        has_unknown = False
         for cid in available_cids:
-            relevance = self.client_relevance_scores.get(cid, 0.0)
+            logical_cid = self.proxy_to_logical_cid.get(cid)
+            cid_aliases[cid] = logical_cid or cid
+            if logical_cid is None:
+                has_unknown = True
+                relevance = 1.0
+            else:
+                relevance = self.client_relevance_scores.get(logical_cid, 0.0)
             scored.append((cid, relevance))
 
         scored.sort(key=lambda item: item[1], reverse=True)
 
-        selected = [cid for cid, rel in scored if rel > self.tau]
+        if has_unknown:
+            selected = [cid for cid, _ in scored]
+        else:
+            selected = [cid for cid, rel in scored if rel > self.tau]
 
         if len(selected) < self.min_selected:
             selected = [cid for cid, _ in scored[: self.min_selected]]
@@ -95,7 +109,7 @@ class DomainAwareFedAvg(FedAvg):
         for cid in available_cids:
             selection_map[cid] = cid in selected
 
-        return selected, selection_map
+        return selected, selection_map, cid_aliases
 
     def configure_fit(
         self,
@@ -115,9 +129,9 @@ class DomainAwareFedAvg(FedAvg):
         )
 
         available_cids = [client.cid for client in all_clients]
-        selected_cids, selection_map = self._select_clients(available_cids)
+        selected_cids, selection_map, cid_aliases = self._select_clients(available_cids)
         self.last_selection_map = dict(selection_map)
-        self.last_selected_cids = list(selected_cids)
+        self.last_selected_cids = [cid_aliases.get(cid, cid) for cid in selected_cids]
 
         client_by_cid = {client.cid: client for client in all_clients}
 
@@ -128,9 +142,12 @@ class DomainAwareFedAvg(FedAvg):
 
         selected_info = []
         for cid in sorted(available_cids, key=self._client_sort_key):
-            rel = self.client_relevance_scores.get(cid, 0.0)
+            logical_cid = cid_aliases.get(cid, cid)
+            rel = self.client_relevance_scores.get(logical_cid, 1.0 if logical_cid == cid else 0.0)
             sel = "✅" if selection_map.get(cid, False) else "❌"
-            selected_info.append(f"    Client {cid}: d={rel:.4f} {sel}")
+            selected_info.append(
+                f"    Client {logical_cid} (proxy={cid}): d={rel:.4f} {sel}"
+            )
 
         print(
             f"\n  Round {server_round} | τ={self.tau:.2f} | "
@@ -162,6 +179,7 @@ class DomainAwareFedAvg(FedAvg):
             logical_cid = str(
                 fit_res.metrics.get("logical_cid", client_proxy.cid)
             )
+            self.proxy_to_logical_cid[client_proxy.cid] = logical_cid
             client_data.append({
                 "cid": logical_cid,
                 "ndarrays": ndarrays,
@@ -171,6 +189,11 @@ class DomainAwareFedAvg(FedAvg):
             })
 
         client_data.sort(key=lambda item: self._client_sort_key(item["cid"]))
+        client_data = [item for item in client_data if item["n_examples"] > 0]
+        if not client_data:
+            if self.last_global_ndarrays is None:
+                return None, {}
+            return ndarrays_to_parameters(self.last_global_ndarrays), {"loss": 0.0}
 
         n_examples = np.array(
             [item["n_examples"] for item in client_data], dtype=float
@@ -240,6 +263,11 @@ class DomainAwareFedAvg(FedAvg):
                 server_round, aggregated
             )
 
+        logical_selection_map = {
+            self.proxy_to_logical_cid.get(proxy_cid, proxy_cid): selected
+            for proxy_cid, selected in self.last_selection_map.items()
+        }
+
         info = {
             "round": server_round,
             "tau": self.tau,
@@ -248,10 +276,10 @@ class DomainAwareFedAvg(FedAvg):
             "aggregated_model_hash": self._hash_ndarrays(aggregated),
             "post_eval_metrics": post_eval_metrics,
             "client_records": client_records,
-            "num_selected": len(results),
+            "num_selected": len(client_data),
             "num_total": len(self.client_relevance_scores),
-            "selected_cids": list(self.last_selected_cids),
-            "selection_map": dict(self.last_selection_map),
+            "selected_cids": [cid for cid, selected in logical_selection_map.items() if selected],
+            "selection_map": logical_selection_map,
         }
         self.round_quality_info.append(info)
 

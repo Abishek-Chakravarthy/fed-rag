@@ -252,13 +252,15 @@ def evaluate_single_run_acceptance(
             qi["num_selected"] == qi["num_total"] for qi in round_infos
         )
 
+    policy_round_infos = round_infos[1:] if tau > 0.0 and len(round_infos) > 1 else round_infos
+
     if tau > 0.0:
         report["positive_tau_excludes_some_clients"]["passed"] = any(
-            qi["num_selected"] < qi["num_total"] for qi in round_infos
+            qi["num_selected"] < qi["num_total"] for qi in policy_round_infos
         )
         report["positive_tau_excludes_some_clients"]["evidence"] = {
             "excluded_per_round": [
-                qi["num_total"] - qi["num_selected"] for qi in round_infos
+                qi["num_total"] - qi["num_selected"] for qi in policy_round_infos
             ]
         }
 
@@ -267,7 +269,7 @@ def evaluate_single_run_acceptance(
     )
 
     policy_matches = []
-    for qi in round_infos:
+    for qi in policy_round_infos:
         above_tau = [
             cid for cid, rel in sorted_by_relevance if rel > tau
         ]
@@ -394,7 +396,8 @@ def client_fn(cid: str):
 def weighted_average(metrics: list[Tuple[int, Metrics]]) -> Metrics:
     losses = [num_examples * float(m["loss"]) for num_examples, m in metrics]
     examples = [num_examples for num_examples, _ in metrics]
-    avg_loss = sum(losses) / sum(examples)
+    total_examples = sum(examples)
+    avg_loss = (sum(losses) / total_examples) if total_examples > 0 else 0.0
     ROUND_METRICS.append({"avg_loss": avg_loss})
     return {"loss": avg_loss}
 

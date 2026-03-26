@@ -4,7 +4,7 @@ import os
 import random
 import numpy as np
 import torch
-from datasets import load_dataset, Dataset
+from datasets import load_dataset
 from fed_rag.knowledge_stores import InMemoryKnowledgeStore
 from fed_rag.retrievers import HFSentenceTransformerRetriever
 from fed_rag.data_structures import KnowledgeNode, NodeType
@@ -83,12 +83,10 @@ def load_beir_dataset(dataset_name: str):
     return doc_lookup, query_lookup, qrels_ds
 
 
-def build_train_eval_pairs(
+def build_positive_pairs(
     doc_lookup,
     query_lookup,
     qrels_ds,
-    max_train=MAX_TRAIN_PAIRS,
-    max_eval=MAX_SERVER_VAL_PAIRS + MAX_FINAL_TEST_PAIRS,
     seed=SEED,
 ):
     pairs = []
@@ -113,13 +111,8 @@ def build_train_eval_pairs(
 
     rng = random.Random(seed)
     rng.shuffle(pairs)
-
-    total = min(len(pairs), max_train + max_eval)
-    eval_pairs = pairs[:max_eval]
-    train_pairs = pairs[max_eval:total]
-
-    print(f"  Built {len(train_pairs)} train + {len(eval_pairs)} eval pairs")
-    return train_pairs, eval_pairs
+    print(f"  Built {len(pairs)} positive pairs before splitting")
+    return pairs
 
 
 def build_knowledge_store(doc_lookup, retriever, max_docs=MAX_CORPUS_DOCS):
@@ -154,6 +147,48 @@ def filter_eval_pairs_by_store(eval_pairs, knowledge_store):
     filtered = [p for p in eval_pairs if p["doc_id"] in store_doc_ids]
     print(f"  🔍 Filtered eval: {len(eval_pairs)} → {len(filtered)}")
     return filtered
+
+
+def split_pairs_with_caps(
+    pairs,
+    *,
+    max_train=MAX_TRAIN_PAIRS,
+    max_server_val=MAX_SERVER_VAL_PAIRS,
+    max_final_test=MAX_FINAL_TEST_PAIRS,
+):
+    total = len(pairs)
+    if total == 0:
+        return [], [], []
+
+    train_target = min(max_train, max(1, int(total * 0.7)))
+    remaining = max(0, total - train_target)
+
+    server_val_target = min(max_server_val, max(1 if remaining > 1 else 0, int(total * 0.15)))
+    server_val_target = min(server_val_target, remaining)
+    remaining -= server_val_target
+
+    final_test_target = min(
+        max_final_test,
+        max(1 if remaining > 0 else 0, int(total * 0.15)),
+    )
+    final_test_target = min(final_test_target, remaining)
+    remaining -= final_test_target
+
+    train_count = total - server_val_target - final_test_target
+    if train_count <= 0:
+        train_count = max(1, total - max(1 if total > 1 else 0, final_test_target))
+        remaining_after_train = total - train_count
+        server_val_target = min(server_val_target, remaining_after_train)
+        final_test_target = min(final_test_target, remaining_after_train - server_val_target)
+
+    train_pairs = pairs[:train_count]
+    server_val_pairs = pairs[train_count:train_count + server_val_target]
+    final_test_pairs = pairs[
+        train_count + server_val_target:
+        train_count + server_val_target + final_test_target
+    ]
+
+    return train_pairs, server_val_pairs, final_test_pairs
 
 
 def compute_domain_centroid(knowledge_store) -> np.ndarray:
@@ -252,15 +287,17 @@ def load_client_data(
     print(f"{'─' * 50}")
 
     doc_lookup, query_lookup, qrels_ds = load_beir_dataset(dataset_name)
-    heldout_total = max_server_val + max_final_test
-    train_pairs, heldout_pairs = build_train_eval_pairs(
-        doc_lookup, query_lookup, qrels_ds,
-        max_train=max_train, max_eval=heldout_total, seed=seed,
-    )
     knowledge_store = build_knowledge_store(doc_lookup, retriever, max_docs)
-    heldout_pairs = filter_eval_pairs_by_store(heldout_pairs, knowledge_store)
-    server_val_pairs = heldout_pairs[:max_server_val]
-    final_test_pairs = heldout_pairs[max_server_val:max_server_val + max_final_test]
+    all_pairs = build_positive_pairs(
+        doc_lookup, query_lookup, qrels_ds, seed=seed
+    )
+    eligible_pairs = filter_eval_pairs_by_store(all_pairs, knowledge_store)
+    train_pairs, server_val_pairs, final_test_pairs = split_pairs_with_caps(
+        eligible_pairs,
+        max_train=max_train,
+        max_server_val=max_server_val,
+        max_final_test=max_final_test,
+    )
 
     domain_centroid = load_cached_centroid(dataset_name, max_docs)
     if domain_centroid is None:
@@ -269,7 +306,7 @@ def load_client_data(
 
     print(f"  Domain centroid norm: {np.linalg.norm(domain_centroid):.4f}")
     print(
-        f"  Held-out split | server_val={len(server_val_pairs)} | "
+        f"  Split sizes | train={len(train_pairs)} | server_val={len(server_val_pairs)} | "
         f"final_test={len(final_test_pairs)}"
     )
 
