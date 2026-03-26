@@ -42,20 +42,24 @@ from quality_aware_fedavg import QualityAwareFedAvg
 
 
 NUM_ROUNDS = 4
-NUM_CLIENTS = 3
+NUM_CLIENTS = 5
 BATCH_SIZE = 8
 LEARNING_RATE = 2e-6
 GENERATOR_MODEL = "distilgpt2"
 DATASET_NAME = "nfcorpus"
-MAX_TRAIN = 1500 # Limits the training set to 1500 query-response pairs.
-MAX_EVAL = 300 # Limits the held-out evaluation set to 300 query-response pairs.
-MAX_DOCS = 3000 # Limits the knowledge store to 3000 documents.
+MAX_TRAIN = 4000 # Limits the training set to 4000 query-response pairs.
+MAX_SHARED_QUALITY = 400 # Shared comparison pairs used for client weighting.
+MAX_SERVER_VAL = 400 # Held-out validation pairs used for best-round selection.
+MAX_FINAL_TEST = 500 # Final untouched test pairs used for the final report.
+MAX_DOCS = 8000 # Limits the knowledge store to 8000 documents.
 QUALITY_HOLDOUT_RATIO = 0.2 # Fraction of each client's clean data reserved for validation.
 NOISE_RATIO = 0.8 # 80% of the noisy client's train split will be corrupted.
 NOISE_MODE = "hard_negative" # The type of noise to introduce.
-NOISY_CLIENT_ID = "2" # The client to introduce noise to.
-CLIENT_SPLIT_MODE = "unequal"
+NOISY_CLIENT_ID = "4" # The client to introduce noise to.
+CLIENT_SPLIT_MODE = "unequal" # "equal" is useful as a control benchmark.
 NOISY_CLIENT_DATA_FRACTION = 0.4
+QUALITY_BETA = 5.0
+QUALITY_RANK_TOP_K = max(TOP_K * 3, 30)
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_DIR = os.path.join(OUTPUT_DIR, "output_csv_files")
 LOG_DIR = os.path.join(OUTPUT_DIR, "output_log_files")
@@ -75,10 +79,11 @@ transformers_logging.set_verbosity_error()
 
 
 CLIENT_TRAIN_DATA = {} # A dictionary to hold the training data for each client.
-CLIENT_QUALITY_HOLDOUTS = {} # Clean per-client holdouts used for quality scoring.
+CLIENT_QUALITY_HOLDOUTS = {} # Clean per-client holdouts used for diagnostics.
 SHARED_QUALITY_PAIRS = [] # Shared clean comparison set used for cross-client weighting.
 KNOWLEDGE_STORE = None # The knowledge store for the RAG system.
-EVAL_PAIRS = [] # The evaluation pairs for the RAG system.
+SERVER_VAL_PAIRS = [] # Validation pairs used to pick the best global model.
+FINAL_TEST_PAIRS = [] # Final held-out test pairs used for reporting.
 DOC_LOOKUP = {} # A dictionary to look up documents in the knowledge store.
 ROUND_METRICS = [] # A list to store the metrics for each round.
 ALPHA = 0.5 # The alpha parameter for the QA-FedAvg algorithm.
@@ -86,6 +91,8 @@ CURRENT_SEED = SEED
 CURRENT_NUM_ROUNDS = NUM_ROUNDS
 CURRENT_LOCAL_EPOCHS = 1
 CURRENT_NOISE_MODE = NOISE_MODE # A global tracker for how the "bad" client is corrupting its data (e.g., shuffle, cross_domain, etc.)
+CURRENT_CLIENT_SPLIT_MODE = CLIENT_SPLIT_MODE
+CURRENT_NOISY_CLIENT_DATA_FRACTION = NOISY_CLIENT_DATA_FRACTION
 NOISE_CONTEXT = {} # A global dictionary to hold extra data needed for certain noise modes (e.g., the pool of cross-domain documents).
 REFERENCE_RETRIEVER = None # Frozen reference retriever used to construct hard in-domain negatives.
 
@@ -212,17 +219,17 @@ def split_noisy(
     Returns:
         tuple[dict, dict]: Training splits and clean validation holdouts.
     """
-    if CLIENT_SPLIT_MODE == "equal":
+    if CURRENT_CLIENT_SPLIT_MODE == "equal":
         splits = split_iid(train_pairs, num_clients)
-    elif CLIENT_SPLIT_MODE == "unequal":
+    elif CURRENT_CLIENT_SPLIT_MODE == "unequal":
         splits = split_unequal_noisy(
             train_pairs,
             num_clients,
             noisy_client=noisy_client,
-            noisy_fraction=NOISY_CLIENT_DATA_FRACTION,
+            noisy_fraction=CURRENT_NOISY_CLIENT_DATA_FRACTION,
         )
     else:
-        raise ValueError(f"Unsupported client split mode: {CLIENT_SPLIT_MODE}")
+        raise ValueError(f"Unsupported client split mode: {CURRENT_CLIENT_SPLIT_MODE}")
 
     train_splits, holdout_splits = reserve_clean_holdouts(splits)
 
@@ -368,24 +375,40 @@ def build_csv_fieldnames(client_ids):
         "round",
         "alpha",
         "seed",
+        "noisy_client_id",
+        "client_split_mode",
         "noise_mode",
         "noise_ratio",
         "avg_loss",
         "avg_train_loss",
         "aggregated_delta_norm",
         "aggregated_model_hash",
-        "pre_mrr",
-        "pre_recall_at_k",
-        "pre_ndcg_at_k",
+        "pre_server_val_mrr",
+        "pre_server_val_recall_at_k",
+        "pre_server_val_ndcg_at_k",
+        "pre_final_test_mrr",
+        "pre_final_test_recall_at_k",
+        "pre_final_test_ndcg_at_k",
         "pre_probe_mrr",
         "pre_probe_recall_at_k",
         "pre_probe_ndcg_at_k",
         "pre_shared_quality_mrr",
         "pre_shared_quality_recall_at_k",
         "pre_shared_quality_ndcg_at_k",
+        "pre_shared_quality_mean_rank",
+        "server_val_mrr",
+        "server_val_recall_at_k",
+        "server_val_ndcg_at_k",
         "post_mrr",
         "post_recall_at_k",
         "post_ndcg_at_k",
+        "best_round_so_far",
+        "best_server_val_mrr_so_far",
+        "best_server_val_ndcg_so_far",
+        "selected_best_round",
+        "final_test_mrr",
+        "final_test_recall_at_k",
+        "final_test_ndcg_at_k",
     ]
     for cid in client_ids:
         base_fields.extend(
@@ -407,6 +430,13 @@ def build_csv_fieldnames(client_ids):
                 f"client_{cid}_shared_quality_mrr",
                 f"client_{cid}_shared_quality_recall_at_k",
                 f"client_{cid}_shared_quality_ndcg_at_k",
+                f"client_{cid}_shared_quality_mean_rank_before",
+                f"client_{cid}_shared_quality_mean_rank_after",
+                f"client_{cid}_shared_quality_mean_rank_delta",
+                f"client_{cid}_shared_quality_mean_positive_delta",
+                f"client_{cid}_shared_quality_mean_negative_delta",
+                f"client_{cid}_shared_quality_degradation_rate",
+                f"client_{cid}_shared_quality_improvement_rate",
                 f"client_{cid}_loss_source",
                 f"client_{cid}_loss_stage",
             ]
@@ -449,7 +479,7 @@ def make_post_aggregation_evaluator():
         return evaluate_retriever(
             retriever,
             KNOWLEDGE_STORE,
-            EVAL_PAIRS,
+            SERVER_VAL_PAIRS,
             top_k=TOP_K,
         )
 
@@ -463,19 +493,85 @@ def flatten_holdout_pairs(holdout_splits):
     return pairs
 
 
-def compute_quality_loss(retriever):
+def compute_doc_ranks(retriever, pairs, *, top_k: int = QUALITY_RANK_TOP_K):
+    ranks = []
+    for pair in pairs:
+        query_emb = retriever.encode_query(pair["query"])[0].tolist()
+        results = KNOWLEDGE_STORE.retrieve(query_emb, top_k=top_k)
+
+        rank = top_k + 1
+        for idx, (_score, node) in enumerate(results, 1):
+            if str(node.metadata.get("doc_id", "")) == str(pair["doc_id"]):
+                rank = idx
+                break
+        ranks.append(rank)
+    return ranks
+
+
+def summarize_rank_displacement(before_ranks, after_ranks):
+    if not before_ranks or not after_ranks:
+        return {
+            "quality_loss": 0.0,
+            "quality_metric_value": 0.0,
+            "mean_rank_before": 0.0,
+            "mean_rank_after": 0.0,
+            "mean_rank_delta": 0.0,
+            "mean_positive_delta": 0.0,
+            "mean_negative_delta": 0.0,
+            "degradation_rate": 0.0,
+            "improvement_rate": 0.0,
+        }
+
+    before_arr = np.asarray(before_ranks, dtype=float)
+    after_arr = np.asarray(after_ranks, dtype=float)
+    deltas = after_arr - before_arr
+    positive = np.maximum(deltas, 0.0)
+    negative = np.maximum(-deltas, 0.0)
+    degradation_rate = float(np.mean(deltas > 0))
+    improvement_rate = float(np.mean(deltas < 0))
+    mean_positive_delta = float(np.mean(positive))
+    mean_negative_delta = float(np.mean(negative))
+
+    # Lower is better: clients that push correct documents down in rank should
+    # incur a larger quality loss, while clients that improve ranking get credit.
+    quality_loss = float(mean_positive_delta - 0.5 * mean_negative_delta)
+    quality_metric_value = float(-quality_loss)
+
+    return {
+        "quality_loss": quality_loss,
+        "quality_metric_value": quality_metric_value,
+        "mean_rank_before": float(np.mean(before_arr)),
+        "mean_rank_after": float(np.mean(after_arr)),
+        "mean_rank_delta": float(np.mean(deltas)),
+        "mean_positive_delta": mean_positive_delta,
+        "mean_negative_delta": mean_negative_delta,
+        "degradation_rate": degradation_rate,
+        "improvement_rate": improvement_rate,
+    }
+
+
+def compute_shared_quality_signal(retriever, baseline_ranks):
+    after_ranks = compute_doc_ranks(
+        retriever,
+        SHARED_QUALITY_PAIRS,
+        top_k=QUALITY_RANK_TOP_K,
+    )
+    summary = summarize_rank_displacement(baseline_ranks, after_ranks)
     comparison_metrics = evaluate_retriever(
         retriever,
         KNOWLEDGE_STORE,
         SHARED_QUALITY_PAIRS,
         top_k=TOP_K,
     )
-    quality_metric_value = (
-        0.5 * comparison_metrics.get("mrr", 0.0)
-        + 0.5 * comparison_metrics.get("ndcg_at_k", 0.0)
+    summary.update(
+        {
+            "shared_mrr": comparison_metrics.get("mrr", 0.0),
+            "shared_recall_at_k": comparison_metrics.get("recall_at_k", 0.0),
+            "shared_ndcg_at_k": comparison_metrics.get("ndcg_at_k", 0.0),
+            "shared_size": len(SHARED_QUALITY_PAIRS),
+        }
     )
-    quality_loss = float(-np.log(max(quality_metric_value, 1e-8)))
-    return quality_loss, quality_metric_value, comparison_metrics
+    return summary
 
 
 def compute_client_holdout_metrics(retriever, cid: str):
@@ -576,7 +672,9 @@ def sample_hard_negative_responses(
                 break
 
         if candidates:
-            responses.append(rng.choice(candidates))
+            # Use the highest-ranked wrong document to make the corruption
+            # consistently challenging instead of randomly mild.
+            responses.append(candidates[0])
         else:
             fallback = sample_random_negative_responses(
                 count=1,
@@ -626,6 +724,9 @@ def write_run_manifest(
     pre_metrics: dict,
     pre_shared_quality_metrics: dict,
     pre_holdout_metrics: dict,
+    pre_final_test_metrics: dict,
+    final_test_metrics: dict,
+    best_round: int,
     split_summary: dict,
     csv_path: str,
     log_path: str,
@@ -645,11 +746,16 @@ def write_run_manifest(
         "learning_rate": LEARNING_RATE,
         "local_epochs": local_epochs,
         "max_train_pairs": MAX_TRAIN,
-        "max_eval_pairs": MAX_EVAL,
+        "max_shared_quality_pairs": MAX_SHARED_QUALITY,
+        "max_server_val_pairs": MAX_SERVER_VAL,
+        "max_final_test_pairs": MAX_FINAL_TEST,
         "max_corpus_docs": MAX_DOCS,
         "shared_quality_pairs_count": len(SHARED_QUALITY_PAIRS),
         "quality_holdout_ratio": QUALITY_HOLDOUT_RATIO,
-        "client_split_mode": CLIENT_SPLIT_MODE,
+        "client_split_mode": CURRENT_CLIENT_SPLIT_MODE,
+        "noisy_client_data_fraction": CURRENT_NOISY_CLIENT_DATA_FRACTION,
+        "quality_beta": QUALITY_BETA,
+        "quality_rank_top_k": QUALITY_RANK_TOP_K,
         "top_k": TOP_K,
         "noise_ratio": noise_ratio,
         "noise_mode": noise_mode,
@@ -658,15 +764,22 @@ def write_run_manifest(
         "pre_metrics": pre_metrics,
         "pre_shared_quality_metrics": pre_shared_quality_metrics,
         "pre_holdout_metrics": pre_holdout_metrics,
+        "pre_final_test_metrics": pre_final_test_metrics,
+        "final_test_metrics": final_test_metrics,
+        "best_round": best_round,
         "client_split_summary": split_summary,
         "train_split_hash": hash_jsonable(split_summary),
-        "csv_schema_version": 3,
+        "csv_schema_version": 4,
         "quality_signal": {
             "strategy_metric_key": "loss",
-            "client_metric_source": "shared_clean_comparison_retrieval",
-            "trainer_return_value": "-log(0.5 * (shared_mrr + shared_ndcg_at_k) + eps)",
+            "client_metric_source": "shared_rank_displacement",
+            "trainer_return_value": "mean(max(rank_after - rank_before, 0)) - 0.5 * mean(max(rank_before - rank_after, 0))",
             "loss_stage": "post_local_training_shared_comparison",
-            "objective": "log-scaled shared comparison retrieval loss",
+            "objective": "shared correct-document rank displacement",
+        },
+        "model_selection": {
+            "criterion": "best_server_val_mrr_then_ndcg",
+            "selected_best_round": best_round,
         },
     }
     with open(manifest_path, "w", encoding="utf-8") as f:
@@ -793,27 +906,41 @@ def client_fn(cid: str):
     original_fit = flower_client.fit
 
     def audited_fit(parameters, config):
+        set_retriever_weights(retriever, parameters)
+        baseline_shared_ranks = compute_doc_ranks(
+            retriever,
+            SHARED_QUALITY_PAIRS,
+            top_k=QUALITY_RANK_TOP_K,
+        )
         weights, num_examples, metrics = original_fit(parameters, config)
         train_loss = float(metrics.get("loss", 1.0))
-        quality_loss, quality_metric_value, comparison_metrics = compute_quality_loss(
-            retriever
+        quality_summary = compute_shared_quality_signal(
+            retriever,
+            baseline_shared_ranks,
         )
         holdout_metrics = compute_client_holdout_metrics(retriever, cid)
         metrics["train_loss"] = train_loss
-        metrics["loss"] = quality_loss
-        metrics["quality_loss"] = quality_loss
-        metrics["quality_metric_name"] = "log_mean_mrr_ndcg_shared"
-        metrics["quality_metric_value"] = quality_metric_value
+        metrics["loss"] = quality_summary["quality_loss"]
+        metrics["quality_loss"] = quality_summary["quality_loss"]
+        metrics["quality_metric_name"] = "shared_rank_displacement"
+        metrics["quality_metric_value"] = quality_summary["quality_metric_value"]
         metrics["probe_size"] = len(CLIENT_QUALITY_HOLDOUTS[cid])
         metrics["probe_mrr"] = holdout_metrics.get("mrr", 0.0)
         metrics["probe_recall_at_k"] = holdout_metrics.get("recall_at_k", 0.0)
         metrics["probe_ndcg_at_k"] = holdout_metrics.get("ndcg_at_k", 0.0)
         metrics["shared_quality_size"] = len(SHARED_QUALITY_PAIRS)
-        metrics["shared_quality_mrr"] = comparison_metrics.get("mrr", 0.0)
-        metrics["shared_quality_recall_at_k"] = comparison_metrics.get("recall_at_k", 0.0)
-        metrics["shared_quality_ndcg_at_k"] = comparison_metrics.get("ndcg_at_k", 0.0)
+        metrics["shared_quality_mrr"] = quality_summary["shared_mrr"]
+        metrics["shared_quality_recall_at_k"] = quality_summary["shared_recall_at_k"]
+        metrics["shared_quality_ndcg_at_k"] = quality_summary["shared_ndcg_at_k"]
+        metrics["shared_quality_mean_rank_before"] = quality_summary["mean_rank_before"]
+        metrics["shared_quality_mean_rank_after"] = quality_summary["mean_rank_after"]
+        metrics["shared_quality_mean_rank_delta"] = quality_summary["mean_rank_delta"]
+        metrics["shared_quality_mean_positive_delta"] = quality_summary["mean_positive_delta"]
+        metrics["shared_quality_mean_negative_delta"] = quality_summary["mean_negative_delta"]
+        metrics["shared_quality_degradation_rate"] = quality_summary["degradation_rate"]
+        metrics["shared_quality_improvement_rate"] = quality_summary["improvement_rate"]
         metrics["train_loss_source"] = "lsr_training_loss"
-        metrics["loss_source"] = "shared_clean_comparison_retrieval"
+        metrics["loss_source"] = "shared_rank_displacement"
         metrics["loss_stage"] = "post_local_training_shared_comparison"
         metrics["noise_mode"] = CURRENT_NOISE_MODE
         metrics["logical_cid"] = cid
@@ -851,18 +978,23 @@ def main(
     noise_ratio: float = NOISE_RATIO,
     num_rounds: int = NUM_ROUNDS,
     local_epochs: int = 1,
+    client_split_mode: str = CLIENT_SPLIT_MODE,
+    noisy_client_fraction: float = NOISY_CLIENT_DATA_FRACTION,
 ):
     global CLIENT_TRAIN_DATA, CLIENT_QUALITY_HOLDOUTS, SHARED_QUALITY_PAIRS
-    global KNOWLEDGE_STORE, EVAL_PAIRS
+    global KNOWLEDGE_STORE, SERVER_VAL_PAIRS, FINAL_TEST_PAIRS
     global DOC_LOOKUP, ALPHA, REFERENCE_RETRIEVER
     global CURRENT_SEED, CURRENT_NUM_ROUNDS, CURRENT_LOCAL_EPOCHS
-    global CURRENT_NOISE_MODE, NOISE_CONTEXT
+    global CURRENT_NOISE_MODE, CURRENT_CLIENT_SPLIT_MODE
+    global CURRENT_NOISY_CLIENT_DATA_FRACTION, NOISE_CONTEXT
 
     ALPHA = alpha
     CURRENT_SEED = seed
     CURRENT_NUM_ROUNDS = num_rounds
     CURRENT_LOCAL_EPOCHS = local_epochs
     CURRENT_NOISE_MODE = noise_mode
+    CURRENT_CLIENT_SPLIT_MODE = client_split_mode
+    CURRENT_NOISY_CLIENT_DATA_FRACTION = noisy_client_fraction
 
     os.makedirs(CSV_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -889,19 +1021,26 @@ def main(
         f"Start | α={alpha:.1f} | seed={seed} | mode={noise_mode} | "
         f"ratio={noise_ratio:.2f} | rounds={num_rounds} | epochs={local_epochs}"
     )
+    print(
+        f"Config | clients={NUM_CLIENTS} | split={client_split_mode} | "
+        f"noisy_fraction={noisy_client_fraction:.2f} | quality_beta={QUALITY_BETA:.1f}"
+    )
     print(f"Device | runtime={get_runtime_device()}")
     print("=" * 70)
 
     data = setup_dataset(
         DATASET_NAME,
         max_train=MAX_TRAIN,
-        max_eval=MAX_EVAL,
+        max_shared_quality=MAX_SHARED_QUALITY,
+        max_server_val=MAX_SERVER_VAL,
+        max_final_test=MAX_FINAL_TEST,
         max_docs=MAX_DOCS,
         seed=seed,
     )
     KNOWLEDGE_STORE = data["knowledge_store"]
-    EVAL_PAIRS = data["eval_pairs"]
-    SHARED_QUALITY_PAIRS = data["quality_probe_pairs"]
+    SERVER_VAL_PAIRS = data["server_val_pairs"]
+    FINAL_TEST_PAIRS = data["final_test_pairs"]
+    SHARED_QUALITY_PAIRS = data["shared_quality_pairs"]
     DOC_LOOKUP = data["doc_lookup"]
     REFERENCE_RETRIEVER = data["retriever"]
     NOISE_CONTEXT = {}
@@ -924,7 +1063,18 @@ def main(
     }
 
     retriever = REFERENCE_RETRIEVER
-    pre_metrics = evaluate_retriever(retriever, KNOWLEDGE_STORE, EVAL_PAIRS, top_k=TOP_K)
+    pre_server_val_metrics = evaluate_retriever(
+        retriever,
+        KNOWLEDGE_STORE,
+        SERVER_VAL_PAIRS,
+        top_k=TOP_K,
+    )
+    pre_final_test_metrics = evaluate_retriever(
+        retriever,
+        KNOWLEDGE_STORE,
+        FINAL_TEST_PAIRS,
+        top_k=TOP_K,
+    )
     pre_probe_metrics = evaluate_retriever(
         retriever,
         KNOWLEDGE_STORE,
@@ -937,11 +1087,22 @@ def main(
         SHARED_QUALITY_PAIRS,
         top_k=TOP_K,
     )
+    pre_shared_ranks = compute_doc_ranks(
+        retriever,
+        SHARED_QUALITY_PAIRS,
+        top_k=QUALITY_RANK_TOP_K,
+    )
     print(
-        "Pre-eval | "
-        f"MRR={pre_metrics['mrr']:.4f} | "
-        f"Recall@k={pre_metrics['recall_at_k']:.4f} | "
-        f"NDCG@k={pre_metrics['ndcg_at_k']:.4f}"
+        "ServerV | "
+        f"MRR={pre_server_val_metrics['mrr']:.4f} | "
+        f"Recall@k={pre_server_val_metrics['recall_at_k']:.4f} | "
+        f"NDCG@k={pre_server_val_metrics['ndcg_at_k']:.4f}"
+    )
+    print(
+        "Test   | "
+        f"MRR={pre_final_test_metrics['mrr']:.4f} | "
+        f"Recall@k={pre_final_test_metrics['recall_at_k']:.4f} | "
+        f"NDCG@k={pre_final_test_metrics['ndcg_at_k']:.4f}"
     )
     print(
         "Holdout | "
@@ -953,7 +1114,8 @@ def main(
         "Shared  | "
         f"MRR={pre_shared_quality_metrics['mrr']:.4f} | "
         f"Recall@k={pre_shared_quality_metrics['recall_at_k']:.4f} | "
-        f"NDCG@k={pre_shared_quality_metrics['ndcg_at_k']:.4f}"
+        f"NDCG@k={pre_shared_quality_metrics['ndcg_at_k']:.4f} | "
+        f"MeanRank={float(np.mean(pre_shared_ranks)):.2f}"
     )
 
     AcceleratorState._reset_state()
@@ -966,6 +1128,7 @@ def main(
 
     strategy = QualityAwareFedAvg(
         alpha=alpha,
+        quality_beta=QUALITY_BETA,
         focus_client_id=NOISY_CLIENT_ID,
         fraction_fit=1.0,
         fraction_evaluate=0.0,
@@ -996,6 +1159,21 @@ def main(
         client_resources=client_resources,
     )
 
+    selected_ndarrays = strategy.best_global_ndarrays or strategy.last_global_ndarrays
+    final_test_metrics = {"mrr": 0.0, "recall_at_k": 0.0, "ndcg_at_k": 0.0}
+    selected_best_round = strategy.best_round or (
+        strategy.round_quality_info[-1]["round"] if strategy.round_quality_info else 0
+    )
+    if selected_ndarrays is not None:
+        final_retriever = create_retriever()
+        set_retriever_weights(final_retriever, selected_ndarrays)
+        final_test_metrics = evaluate_retriever(
+            final_retriever,
+            KNOWLEDGE_STORE,
+            FINAL_TEST_PAIRS,
+            top_k=TOP_K,
+        )
+
     client_ids = sorted(CLIENT_TRAIN_DATA.keys(), key=client_sort_key)
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=build_csv_fieldnames(client_ids))
@@ -1009,24 +1187,44 @@ def main(
                 "round": qi["round"],
                 "alpha": f"{alpha:.1f}",
                 "seed": str(seed),
+                "noisy_client_id": NOISY_CLIENT_ID,
+                "client_split_mode": CURRENT_CLIENT_SPLIT_MODE,
                 "noise_mode": noise_mode,
                 "noise_ratio": f"{noise_ratio:.2f}",
                 "avg_loss": f"{qi['aggregated_loss']:.6f}",
                 "avg_train_loss": "",
                 "aggregated_delta_norm": f"{qi['aggregated_delta_norm']:.6f}",
                 "aggregated_model_hash": qi["aggregated_model_hash"],
-                "pre_mrr": f"{pre_metrics['mrr']:.6f}",
-                "pre_recall_at_k": f"{pre_metrics['recall_at_k']:.6f}",
-                "pre_ndcg_at_k": f"{pre_metrics['ndcg_at_k']:.6f}",
+                "pre_server_val_mrr": f"{pre_server_val_metrics['mrr']:.6f}",
+                "pre_server_val_recall_at_k": f"{pre_server_val_metrics['recall_at_k']:.6f}",
+                "pre_server_val_ndcg_at_k": f"{pre_server_val_metrics['ndcg_at_k']:.6f}",
+                "pre_final_test_mrr": f"{pre_final_test_metrics['mrr']:.6f}",
+                "pre_final_test_recall_at_k": f"{pre_final_test_metrics['recall_at_k']:.6f}",
+                "pre_final_test_ndcg_at_k": f"{pre_final_test_metrics['ndcg_at_k']:.6f}",
                 "pre_probe_mrr": f"{pre_probe_metrics['mrr']:.6f}",
                 "pre_probe_recall_at_k": f"{pre_probe_metrics['recall_at_k']:.6f}",
                 "pre_probe_ndcg_at_k": f"{pre_probe_metrics['ndcg_at_k']:.6f}",
                 "pre_shared_quality_mrr": f"{pre_shared_quality_metrics['mrr']:.6f}",
                 "pre_shared_quality_recall_at_k": f"{pre_shared_quality_metrics['recall_at_k']:.6f}",
                 "pre_shared_quality_ndcg_at_k": f"{pre_shared_quality_metrics['ndcg_at_k']:.6f}",
+                "pre_shared_quality_mean_rank": f"{float(np.mean(pre_shared_ranks)):.6f}",
+                "server_val_mrr": f"{qi['post_eval_metrics'].get('mrr', 0.0):.6f}",
+                "server_val_recall_at_k": f"{qi['post_eval_metrics'].get('recall_at_k', 0.0):.6f}",
+                "server_val_ndcg_at_k": f"{qi['post_eval_metrics'].get('ndcg_at_k', 0.0):.6f}",
                 "post_mrr": f"{qi['post_eval_metrics'].get('mrr', 0.0):.6f}",
                 "post_recall_at_k": f"{qi['post_eval_metrics'].get('recall_at_k', 0.0):.6f}",
                 "post_ndcg_at_k": f"{qi['post_eval_metrics'].get('ndcg_at_k', 0.0):.6f}",
+                "best_round_so_far": str(qi.get("best_round_so_far", "")),
+                "best_server_val_mrr_so_far": (
+                    f"{qi.get('best_post_eval_metrics_so_far', {}).get('mrr', 0.0):.6f}"
+                ),
+                "best_server_val_ndcg_so_far": (
+                    f"{qi.get('best_post_eval_metrics_so_far', {}).get('ndcg_at_k', 0.0):.6f}"
+                ),
+                "selected_best_round": str(selected_best_round),
+                "final_test_mrr": f"{final_test_metrics.get('mrr', 0.0):.6f}",
+                "final_test_recall_at_k": f"{final_test_metrics.get('recall_at_k', 0.0):.6f}",
+                "final_test_ndcg_at_k": f"{final_test_metrics.get('ndcg_at_k', 0.0):.6f}",
             }
 
             if idx < len(ROUND_METRICS):
@@ -1066,6 +1264,27 @@ def main(
                 row[f"client_{cid}_shared_quality_ndcg_at_k"] = (
                     f"{record['shared_quality_ndcg_at_k']:.6f}"
                 )
+                row[f"client_{cid}_shared_quality_mean_rank_before"] = (
+                    f"{record['shared_quality_mean_rank_before']:.6f}"
+                )
+                row[f"client_{cid}_shared_quality_mean_rank_after"] = (
+                    f"{record['shared_quality_mean_rank_after']:.6f}"
+                )
+                row[f"client_{cid}_shared_quality_mean_rank_delta"] = (
+                    f"{record['shared_quality_mean_rank_delta']:.6f}"
+                )
+                row[f"client_{cid}_shared_quality_mean_positive_delta"] = (
+                    f"{record['shared_quality_mean_positive_delta']:.6f}"
+                )
+                row[f"client_{cid}_shared_quality_mean_negative_delta"] = (
+                    f"{record['shared_quality_mean_negative_delta']:.6f}"
+                )
+                row[f"client_{cid}_shared_quality_degradation_rate"] = (
+                    f"{record['shared_quality_degradation_rate']:.6f}"
+                )
+                row[f"client_{cid}_shared_quality_improvement_rate"] = (
+                    f"{record['shared_quality_improvement_rate']:.6f}"
+                )
                 row[f"client_{cid}_loss_source"] = record["loss_source"]
                 row[f"client_{cid}_loss_stage"] = record["loss_stage"]
             writer.writerow(row)
@@ -1086,9 +1305,12 @@ def main(
         num_rounds=num_rounds,
         local_epochs=local_epochs,
         initial_hash=initial_hash,
-        pre_metrics=pre_metrics,
+        pre_metrics=pre_server_val_metrics,
         pre_shared_quality_metrics=pre_shared_quality_metrics,
         pre_holdout_metrics=pre_probe_metrics,
+        pre_final_test_metrics=pre_final_test_metrics,
+        final_test_metrics=final_test_metrics,
+        best_round=selected_best_round,
         split_summary=split_summary,
         csv_path=csv_path,
         log_path=log_file,
@@ -1097,6 +1319,11 @@ def main(
 
     print(f"\n{'=' * 70}")
     print(f"✅ QA-FEDAVG NOISY EXPERIMENT COMPLETE (α={alpha})")
+    print(
+        f"🏁 Best round={selected_best_round} | "
+        f"final_test_mrr={final_test_metrics.get('mrr', 0.0):.4f} | "
+        f"final_test_ndcg={final_test_metrics.get('ndcg_at_k', 0.0):.4f}"
+    )
     print(f"📄 Results saved to: {csv_path}")
     print(f"🧾 Manifest saved to: {manifest_path}")
     print(f"✅ Acceptance report: {acceptance_path}")
@@ -1147,6 +1374,19 @@ if __name__ == "__main__":
         default=1,
         help="Number of local epochs per client per round",
     )
+    parser.add_argument(
+        "--client-split-mode",
+        type=str,
+        default=CLIENT_SPLIT_MODE,
+        choices=["equal", "unequal"],
+        help="Use equal split for the control benchmark and unequal for the stress benchmark",
+    )
+    parser.add_argument(
+        "--noisy-client-fraction",
+        type=float,
+        default=NOISY_CLIENT_DATA_FRACTION,
+        help="Fraction of training pairs assigned to the noisy client when using unequal splits",
+    )
     args = parser.parse_args()
 
     main(
@@ -1156,4 +1396,6 @@ if __name__ == "__main__":
         noise_ratio=args.noise_ratio,
         num_rounds=args.rounds,
         local_epochs=args.local_epochs,
+        client_split_mode=args.client_split_mode,
+        noisy_client_fraction=args.noisy_client_fraction,
     )

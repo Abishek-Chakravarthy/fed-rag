@@ -7,10 +7,11 @@ from fed_rag.data_structures import KnowledgeNode, NodeType
 
 
 RETRIEVER_MODEL = "sentence-transformers/all-MiniLM-L6-v2" # The model used for the retriever.
-MAX_CORPUS_DOCS = 1000 # The maximum number of documents to load into the knowledge store.
-MAX_TRAIN_PAIRS = 500 # The maximum number of training pairs to use.
-MAX_EVAL_PAIRS = 100 # The maximum number of evaluation pairs to use.
-MAX_QUALITY_PROBE_PAIRS = 240 # Shared clean comparison pairs used for quality-aware weighting.
+MAX_CORPUS_DOCS = 8000 # The maximum number of documents to load into the knowledge store.
+MAX_TRAIN_PAIRS = 4000 # The maximum number of training pairs to use.
+MAX_SERVER_VAL_PAIRS = 400 # Validation pairs used to pick the best global round.
+MAX_FINAL_TEST_PAIRS = 500 # Final held-out test pairs used for the final report.
+MAX_SHARED_QUALITY_PAIRS = 400 # Shared clean comparison pairs used for quality-aware weighting.
 TOP_K = 10 # The number of top results to retrieve.
 SEED = 42 # The seed for reproducibility.
 MAX_RESPONSE_CHARS = 500 # The maximum number of characters to use for the response.
@@ -99,7 +100,7 @@ def build_train_eval_pairs(
     query_lookup,
     qrels_ds,
     max_train=MAX_TRAIN_PAIRS,
-    max_eval=MAX_EVAL_PAIRS,
+    max_eval=MAX_SERVER_VAL_PAIRS + MAX_FINAL_TEST_PAIRS + MAX_SHARED_QUALITY_PAIRS,
     seed=SEED,
 ):
     """
@@ -110,11 +111,11 @@ def build_train_eval_pairs(
         query_lookup (dict): Mapping from query_id to query text.
         qrels_ds (iterable): Relevance judgments containing query-doc mappings.
         max_train (int): Maximum number of training pairs to generate.
-        max_eval (int): Maximum number of evaluation pairs to generate.
+        max_eval (int): Maximum number of held-out pairs to generate.
         seed (int): Random seed for reproducibility during shuffling.
 
     Returns:
-        tuple: (train_pairs, eval_pairs) - Lists of dictionaries containing query and response text.
+        tuple: (train_pairs, heldout_pairs) - Lists of dictionaries containing query and response text.
     """
     pairs = []
     seen = set()
@@ -163,11 +164,11 @@ def build_train_eval_pairs(
     rng.shuffle(pairs)
 
     total = min(len(pairs), max_train + max_eval)
-    eval_pairs = pairs[:max_eval]
+    heldout_pairs = pairs[:max_eval]
     train_pairs = pairs[max_eval:total]
 
-    print(f"  Built {len(train_pairs)} train pairs + {len(eval_pairs)} eval pairs")
-    return train_pairs, eval_pairs
+    print(f"  Built {len(train_pairs)} train pairs + {len(heldout_pairs)} held-out pairs")
+    return train_pairs, heldout_pairs
 
 
 def build_knowledge_store(doc_lookup, retriever, max_docs=MAX_CORPUS_DOCS):
@@ -309,8 +310,9 @@ def filter_eval_pairs_by_store(eval_pairs, knowledge_store):
 def setup_dataset(
     dataset_name="nfcorpus",
     max_train=MAX_TRAIN_PAIRS,
-    max_eval=MAX_EVAL_PAIRS,
-    max_quality_probe=MAX_QUALITY_PROBE_PAIRS,
+    max_server_val=MAX_SERVER_VAL_PAIRS,
+    max_final_test=MAX_FINAL_TEST_PAIRS,
+    max_shared_quality=MAX_SHARED_QUALITY_PAIRS,
     max_docs=MAX_CORPUS_DOCS,
     seed=SEED,
 ):
@@ -320,34 +322,41 @@ def setup_dataset(
     Args:
         dataset_name (str): Name of the BEIR dataset to use.
         max_train (int): Maximum number of training samples.
-        max_eval (int): Maximum number of evaluation samples.
-    max_quality_probe (int): Maximum shared clean comparison pairs reserved for weighting.
+        max_server_val (int): Maximum number of validation samples used for best-round selection.
+        max_final_test (int): Maximum number of held-out test samples used for final reporting.
+        max_shared_quality (int): Maximum shared clean comparison pairs reserved for weighting.
         max_docs (int): Maximum documents in the knowledge store.
         seed (int): Seed for random operations.
 
     Returns:
-        dict: A dictionary containing the retriever, knowledge_store, training dataset, 
+        dict: A dictionary containing the retriever, knowledge_store, training dataset,
               and the underlying pairs for reference.
     """
     doc_lookup, query_lookup, qrels_ds = load_beir_dataset(dataset_name)
-    train_pairs, eval_pairs = build_train_eval_pairs(
+    total_holdout = max_shared_quality + max_server_val + max_final_test
+    train_pairs, heldout_pairs = build_train_eval_pairs(
         doc_lookup,
         query_lookup,
         qrels_ds,
         max_train,
-        max_eval * 5 + max_quality_probe,
+        total_holdout,
         seed=seed,
     )
     retriever = create_retriever()
     knowledge_store = build_knowledge_store(doc_lookup, retriever, max_docs)
 
-    eval_pairs = filter_eval_pairs_by_store(eval_pairs, knowledge_store)
-    quality_probe_pairs = eval_pairs[:max_quality_probe]
-    eval_pairs = eval_pairs[max_quality_probe:max_quality_probe + max_eval]
+    heldout_pairs = filter_eval_pairs_by_store(heldout_pairs, knowledge_store)
+    shared_quality_pairs = heldout_pairs[:max_shared_quality]
+    offset = max_shared_quality
+    server_val_pairs = heldout_pairs[offset:offset + max_server_val]
+    offset += max_server_val
+    final_test_pairs = heldout_pairs[offset:offset + max_final_test]
 
     print(
-        "  🧪 Shared comparison pairs: "
-        f"{len(quality_probe_pairs)} | Held-out eval pairs: {len(eval_pairs)}"
+        "  🧪 Shared quality pairs: "
+        f"{len(shared_quality_pairs)} | "
+        f"Server val pairs: {len(server_val_pairs)} | "
+        f"Final test pairs: {len(final_test_pairs)}"
     )
 
     train_dataset = Dataset.from_dict({
@@ -360,18 +369,31 @@ def setup_dataset(
         "knowledge_store": knowledge_store,
         "train_dataset": train_dataset,
         "train_pairs": train_pairs,
-        "quality_probe_pairs": quality_probe_pairs,
-        "eval_pairs": eval_pairs,
+        "shared_quality_pairs": shared_quality_pairs,
+        "server_val_pairs": server_val_pairs,
+        "final_test_pairs": final_test_pairs,
         "doc_lookup": doc_lookup,
     }
 
 
 if __name__ == "__main__":
-    data = setup_dataset("nfcorpus", max_train=20, max_eval=5, max_docs=50)
+    data = setup_dataset(
+        "nfcorpus",
+        max_train=20,
+        max_shared_quality=5,
+        max_server_val=5,
+        max_final_test=5,
+        max_docs=50,
+    )
     print(f"\nTrain dataset size: {len(data['train_dataset'])}")
-    print(f"Eval pairs: {len(data['eval_pairs'])}")
+    print(f"Server val pairs: {len(data['server_val_pairs'])}")
+    print(f"Final test pairs: {len(data['final_test_pairs'])}")
 
-    metrics = evaluate_retriever(data["retriever"], data["knowledge_store"], data["eval_pairs"])
+    metrics = evaluate_retriever(
+        data["retriever"],
+        data["knowledge_store"],
+        data["final_test_pairs"],
+    )
     print(f"\nBaseline metrics (before training):")
     for k, v in metrics.items():
         print(f"  {k}: {v:.4f}")

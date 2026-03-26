@@ -19,6 +19,7 @@ class QualityAwareFedAvg(FedAvg):
         self,
         alpha: float = 0.5,
         epsilon: float = 1e-8,
+        quality_beta: float = 5.0,
         focus_client_id: Optional[str] = None,
         post_aggregation_evaluator: Optional[
             Callable[[int, list[np.ndarray]], dict[str, float]]
@@ -28,10 +29,14 @@ class QualityAwareFedAvg(FedAvg):
         super().__init__(**kwargs)
         self.alpha = alpha
         self.epsilon = epsilon
+        self.quality_beta = quality_beta
         self.focus_client_id = focus_client_id
         self.post_aggregation_evaluator = post_aggregation_evaluator
         self.round_quality_info: list[dict[str, Any]] = []
         self.last_global_ndarrays: Optional[list[np.ndarray]] = None
+        self.best_global_ndarrays: Optional[list[np.ndarray]] = None
+        self.best_round: Optional[int] = None
+        self.best_post_eval_metrics: dict[str, float] = {}
 
         if self.initial_parameters is not None:
             self.last_global_ndarrays = parameters_to_ndarrays(
@@ -50,6 +55,20 @@ class QualityAwareFedAvg(FedAvg):
         for arr in ndarrays:
             digest.update(arr.tobytes())
         return digest.hexdigest()
+
+    def _compute_quality_scores(self, losses: np.ndarray) -> np.ndarray:
+        if len(losses) == 1:
+            return np.array([1.0], dtype=float)
+
+        std = float(np.std(losses))
+        if std <= self.epsilon:
+            return np.full(losses.shape, 1.0 / len(losses), dtype=float)
+
+        zscores = (losses - float(np.mean(losses))) / std
+        scaled = -self.quality_beta * zscores
+        scaled = scaled - float(np.max(scaled))
+        exp_scores = np.exp(scaled)
+        return exp_scores / float(np.sum(exp_scores))
 
     def aggregate_fit(
         self,
@@ -85,8 +104,7 @@ class QualityAwareFedAvg(FedAvg):
         client_data.sort(key=lambda item: self._client_sort_key(item["cid"]))
 
         losses = np.array([item["loss"] for item in client_data], dtype=float)
-        inverse_losses = 1.0 / (losses + self.epsilon)
-        quality_scores = inverse_losses / inverse_losses.sum()
+        quality_scores = self._compute_quality_scores(losses)
 
         n_examples = np.array(
             [item["n_examples"] for item in client_data], dtype=float
@@ -184,6 +202,27 @@ class QualityAwareFedAvg(FedAvg):
                     "shared_quality_ndcg_at_k": float(
                         fit_metrics.get("shared_quality_ndcg_at_k", 0.0)
                     ),
+                    "shared_quality_mean_rank_before": float(
+                        fit_metrics.get("shared_quality_mean_rank_before", 0.0)
+                    ),
+                    "shared_quality_mean_rank_after": float(
+                        fit_metrics.get("shared_quality_mean_rank_after", 0.0)
+                    ),
+                    "shared_quality_mean_rank_delta": float(
+                        fit_metrics.get("shared_quality_mean_rank_delta", 0.0)
+                    ),
+                    "shared_quality_mean_positive_delta": float(
+                        fit_metrics.get("shared_quality_mean_positive_delta", 0.0)
+                    ),
+                    "shared_quality_mean_negative_delta": float(
+                        fit_metrics.get("shared_quality_mean_negative_delta", 0.0)
+                    ),
+                    "shared_quality_degradation_rate": float(
+                        fit_metrics.get("shared_quality_degradation_rate", 0.0)
+                    ),
+                    "shared_quality_improvement_rate": float(
+                        fit_metrics.get("shared_quality_improvement_rate", 0.0)
+                    ),
                     "loss_source": str(
                         fit_metrics.get("loss_source", "unknown")
                     ),
@@ -199,6 +238,22 @@ class QualityAwareFedAvg(FedAvg):
                 server_round, aggregated
             )
 
+        is_best_round = False
+        if post_eval_metrics:
+            candidate_key = (
+                float(post_eval_metrics.get("mrr", 0.0)),
+                float(post_eval_metrics.get("ndcg_at_k", 0.0)),
+            )
+            current_best_key = (
+                float(self.best_post_eval_metrics.get("mrr", -np.inf)),
+                float(self.best_post_eval_metrics.get("ndcg_at_k", -np.inf)),
+            )
+            if self.best_global_ndarrays is None or candidate_key > current_best_key:
+                self.best_global_ndarrays = [layer.copy() for layer in aggregated]
+                self.best_round = server_round
+                self.best_post_eval_metrics = dict(post_eval_metrics)
+                is_best_round = True
+
         info = {
             "round": server_round,
             "alpha": self.alpha,
@@ -206,6 +261,9 @@ class QualityAwareFedAvg(FedAvg):
             "aggregated_delta_norm": aggregated_delta_norm,
             "aggregated_model_hash": self._hash_ndarrays(aggregated),
             "post_eval_metrics": post_eval_metrics,
+            "is_best_round": is_best_round,
+            "best_round_so_far": self.best_round,
+            "best_post_eval_metrics_so_far": dict(self.best_post_eval_metrics),
             "client_records": client_records,
         }
         self.round_quality_info.append(info)
@@ -238,9 +296,11 @@ class QualityAwareFedAvg(FedAvg):
             )
         if post_eval_metrics:
             summary += (
-                f" | post_mrr={post_eval_metrics.get('mrr', 0.0):.4f}"
-                f" | post_ndcg={post_eval_metrics.get('ndcg_at_k', 0.0):.4f}"
+                f" | val_mrr={post_eval_metrics.get('mrr', 0.0):.4f}"
+                f" | val_ndcg={post_eval_metrics.get('ndcg_at_k', 0.0):.4f}"
             )
+        if is_best_round:
+            summary += " | best_so_far=YES"
         print(summary, flush=True)
 
         self.last_global_ndarrays = aggregated

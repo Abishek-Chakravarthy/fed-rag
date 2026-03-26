@@ -11,6 +11,7 @@ import time
 DEFAULT_ALPHA_VALUES = [0.0, 0.3, 0.7, 1.0]
 DEFAULT_SEEDS = [42, 52, 62]
 DEFAULT_NOISE_MODES = [
+    "shuffle",
     "hard_negative",
 ]
 DEFAULT_NOISE_RATIOS = [0.8]
@@ -88,6 +89,8 @@ def append_progress(progress_path: str, record: dict) -> None:
 def run_one(alpha, seed, noise_mode, noise_ratio, rounds, local_epochs, *, force=False) -> dict:
     os.makedirs(CSV_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
+    client_split_mode = "equal" if noise_mode == "shuffle" else "unequal"
+    noisy_fraction = 0.4
 
     run_slug = build_run_slug(
         alpha=alpha,
@@ -152,6 +155,10 @@ def run_one(alpha, seed, noise_mode, noise_ratio, rounds, local_epochs, *, force
                 str(rounds),
                 "--local-epochs",
                 str(local_epochs),
+                "--client-split-mode",
+                client_split_mode,
+                "--noisy-client-fraction",
+                str(noisy_fraction),
             ],
             stdout=log_file,
             stderr=subprocess.STDOUT,
@@ -224,11 +231,29 @@ def summarize_group(run_records, *, noise_mode, noise_ratio, rounds, local_epoch
             acceptance_reports.append(load_json(record["acceptance_path"]))
 
         final_losses = [float(row["avg_loss"]) for row in final_rows]
-        final_post_mrr = [float(row["post_mrr"]) for row in final_rows]
-        final_post_recall = [float(row["post_recall_at_k"]) for row in final_rows]
-        final_post_ndcg = [float(row["post_ndcg_at_k"]) for row in final_rows]
-        final_noisy_weight = [float(row["client_2_weight"]) for row in final_rows]
+        final_post_mrr = [
+            float(row.get("final_test_mrr") or row.get("post_mrr", 0.0))
+            for row in final_rows
+        ]
+        final_post_recall = [
+            float(row.get("final_test_recall_at_k") or row.get("post_recall_at_k", 0.0))
+            for row in final_rows
+        ]
+        final_post_ndcg = [
+            float(row.get("final_test_ndcg_at_k") or row.get("post_ndcg_at_k", 0.0))
+            for row in final_rows
+        ]
+        final_noisy_weight = []
+        for row in final_rows:
+            noisy_client_id = row.get("noisy_client_id", "2")
+            final_noisy_weight.append(
+                float(row.get(f"client_{noisy_client_id}_weight", 0.0))
+            )
         final_delta = [float(row["aggregated_delta_norm"]) for row in final_rows]
+        final_best_round = [
+            float(row.get("selected_best_round", 0.0) or 0.0)
+            for row in final_rows
+        ]
 
         loss_mean, loss_std = mean_and_std(final_losses)
         mrr_mean, mrr_std = mean_and_std(final_post_mrr)
@@ -236,6 +261,7 @@ def summarize_group(run_records, *, noise_mode, noise_ratio, rounds, local_epoch
         ndcg_mean, ndcg_std = mean_and_std(final_post_ndcg)
         noisy_weight_mean, noisy_weight_std = mean_and_std(final_noisy_weight)
         delta_mean, delta_std = mean_and_std(final_delta)
+        best_round_mean, best_round_std = mean_and_std(final_best_round)
 
         summary_rows.append(
             {
@@ -254,6 +280,8 @@ def summarize_group(run_records, *, noise_mode, noise_ratio, rounds, local_epoch
                 "final_post_ndcg_std": f"{ndcg_std:.6f}",
                 "final_noisy_weight_mean": f"{noisy_weight_mean:.6f}",
                 "final_noisy_weight_std": f"{noisy_weight_std:.6f}",
+                "selected_best_round_mean": f"{best_round_mean:.6f}",
+                "selected_best_round_std": f"{best_round_std:.6f}",
                 "final_delta_mean": f"{delta_mean:.6f}",
                 "final_delta_std": f"{delta_std:.6f}",
                 "artifacts_present": str(all_artifacts_present),
@@ -275,8 +303,8 @@ def summarize_group(run_records, *, noise_mode, noise_ratio, rounds, local_epoch
             ) if acceptance_reports else False
 
     if summary_rows:
-        loss_means = {
-            float(row["alpha"]): float(row["final_loss_mean"])
+        metric_means = {
+            float(row["alpha"]): float(row["final_post_mrr_mean"])
             for row in summary_rows
         }
         noisy_weight_means = {
@@ -290,16 +318,16 @@ def summarize_group(run_records, *, noise_mode, noise_ratio, rounds, local_epoch
             row["artifacts_present"] == "True" for row in summary_rows
         )
 
-        best_alpha = min(loss_means, key=loss_means.get)
+        best_alpha = max(metric_means, key=metric_means.get)
         best_is_midpoint = best_alpha not in {
-            min(loss_means.keys()),
-            max(loss_means.keys()),
+            min(metric_means.keys()),
+            max(metric_means.keys()),
         }
         acceptance_summary["criteria"]["inverted_u_reproduced"] = best_is_midpoint
         acceptance_summary["criteria"]["thesis_revision_needed"] = not best_is_midpoint
         acceptance_summary["evidence"] = {
-            "best_alpha_by_final_loss_mean": best_alpha,
-            "loss_means": loss_means,
+            "best_alpha_by_final_post_mrr_mean": best_alpha,
+            "metric_means": metric_means,
             "noisy_weight_means": noisy_weight_means,
         }
 
@@ -325,6 +353,8 @@ def summarize_group(run_records, *, noise_mode, noise_ratio, rounds, local_epoch
             "final_post_ndcg_std",
             "final_noisy_weight_mean",
             "final_noisy_weight_std",
+            "selected_best_round_mean",
+            "selected_best_round_std",
             "final_delta_mean",
             "final_delta_std",
             "artifacts_present",
@@ -418,9 +448,9 @@ def main():
         print(f"Acceptance JSON : {acceptance_path}")
         if acceptance_summary.get("evidence"):
             print(
-                f"Best alpha by mean final loss "
+                f"Best alpha by mean final test MRR "
                 f"({noise_mode}, ratio={noise_ratio:.2f}): "
-                f"{acceptance_summary['evidence']['best_alpha_by_final_loss_mean']}"
+                f"{acceptance_summary['evidence']['best_alpha_by_final_post_mrr_mean']}"
             )
         for row in summary_rows:
             print(
