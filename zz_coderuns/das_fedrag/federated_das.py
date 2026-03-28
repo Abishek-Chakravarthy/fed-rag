@@ -15,7 +15,7 @@ import flwr as fl
 from accelerate.state import AcceleratorState
 from datasets import Dataset
 from datasets.utils import logging as datasets_logging
-from flwr.common import Metrics
+from flwr.common import Context, Metrics
 from flwr.common.parameter import ndarrays_to_parameters
 from sentence_transformers import SentenceTransformerTrainingArguments
 from transformers import GenerationConfig
@@ -93,7 +93,7 @@ def get_generator_load_kwargs() -> dict:
 
     device = get_runtime_device()
     if device == "cuda":
-        return {"torch_dtype": _torch.float16, "device_map": "auto"}
+        return {"torch_dtype": _torch.float32, "device_map": "auto"}
     return {"torch_dtype": _torch.float32}
 
 
@@ -252,7 +252,9 @@ def evaluate_single_run_acceptance(
             qi["num_selected"] == qi["num_total"] for qi in round_infos
         )
 
-    policy_round_infos = round_infos[1:] if tau > 0.0 and len(round_infos) > 1 else round_infos
+    # Skip round 1: proxy→logical CID mapping is not established until
+    # after the first aggregate_fit, so selection cannot use tau.
+    policy_round_infos = round_infos[1:] if len(round_infos) > 1 else round_infos
 
     if tau > 0.0:
         report["positive_tau_excludes_some_clients"]["passed"] = any(
@@ -304,7 +306,8 @@ def evaluate_single_run_acceptance(
     return report
 
 
-def client_fn(cid: str):
+def client_fn(context: Context):
+    cid = str(context.node_config["partition-id"])
     AcceleratorState._reset_state()
 
     logger.info(

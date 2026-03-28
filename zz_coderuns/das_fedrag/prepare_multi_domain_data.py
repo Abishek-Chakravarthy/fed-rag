@@ -18,6 +18,7 @@ MAX_FINAL_TEST_PAIRS = 500
 TOP_K = 10
 SEED = 42
 MAX_RESPONSE_CHARS = 500
+MAX_QUERY_CHARS = 300
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".centroid_cache")
 
 DEFAULT_CLIENT_CONFIGS = [
@@ -99,10 +100,11 @@ def build_positive_pairs(
             q_text = query_lookup.get(qid) or query_lookup.get(str(qid))
             d_text = doc_lookup.get(did) or doc_lookup.get(str(did))
             if q_text and d_text:
+                q_text_truncated = q_text[:MAX_QUERY_CHARS]
                 d_text_truncated = d_text[:MAX_RESPONSE_CHARS]
                 doc_id_str = str(did)
                 pairs.append({
-                    "query": q_text,
+                    "query": q_text_truncated,
                     "response": d_text_truncated,
                     "query_id": qid,
                     "doc_id": doc_id_str,
@@ -174,7 +176,7 @@ def split_pairs_with_caps(
     final_test_target = min(final_test_target, remaining)
     remaining -= final_test_target
 
-    train_count = total - server_val_target - final_test_target
+    train_count = min(train_target, total - server_val_target - final_test_target)
     if train_count <= 0:
         train_count = max(1, total - max(1 if total > 1 else 0, final_test_target))
         remaining_after_train = total - train_count

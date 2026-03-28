@@ -80,7 +80,7 @@ class DomainAwareFedAvg(FedAvg):
         return False
 
     def _select_clients(
-        self, available_cids: list[str]
+        self, available_cids: list[str], server_round: int
     ) -> tuple[list[str], dict[str, bool], dict[str, str]]:
         scored = []
         cid_aliases = {}
@@ -98,7 +98,14 @@ class DomainAwareFedAvg(FedAvg):
         scored.sort(key=lambda item: item[1], reverse=True)
 
         if has_unknown:
+            # Round 1: proxy→logical mapping not yet established;
+            # select all so every client trains once and reports its logical CID.
             selected = [cid for cid, _ in scored]
+            if server_round > 1:
+                print(
+                    f"  WARNING: Round {server_round} still has unmapped proxy CIDs; "
+                    "selecting all clients as fallback."
+                )
         else:
             selected = [cid for cid, rel in scored if rel > self.tau]
 
@@ -129,7 +136,9 @@ class DomainAwareFedAvg(FedAvg):
         )
 
         available_cids = [client.cid for client in all_clients]
-        selected_cids, selection_map, cid_aliases = self._select_clients(available_cids)
+        selected_cids, selection_map, cid_aliases = self._select_clients(
+            available_cids, server_round
+        )
         self.last_selection_map = dict(selection_map)
         self.last_selected_cids = [cid_aliases.get(cid, cid) for cid in selected_cids]
 
