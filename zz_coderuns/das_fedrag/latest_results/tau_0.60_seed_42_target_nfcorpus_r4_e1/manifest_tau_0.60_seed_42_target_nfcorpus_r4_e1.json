@@ -1,0 +1,84 @@
+{
+  "acceptance_report": "/kaggle/working/fed-rag/zz_coderuns/das_fedrag/output_csv_files/acceptance_tau_0.60_seed_42_target_nfcorpus_r4_e1.json",
+  "batch_size": 8,
+  "best_round": 1,
+  "best_server_val_metrics": {
+    "mrr": 0.011246031746031747,
+    "ndcg_at_k": 0.01624095772161585,
+    "recall_at_k": 0.0325
+  },
+  "canonical_log_file": "/kaggle/working/fed-rag/zz_coderuns/das_fedrag/output_log_files/log_tau_0.60_seed_42_target_nfcorpus_r4_e1.log",
+  "canonical_results_csv": "/kaggle/working/fed-rag/zz_coderuns/das_fedrag/output_csv_files/results_tau_0.60_seed_42_target_nfcorpus_r4_e1.csv",
+  "client_domains": {
+    "0": "medical",
+    "1": "science",
+    "2": "finance",
+    "3": "argument",
+    "4": "biomedical"
+  },
+  "client_split_summary": {
+    "0": {
+      "domain": "medical",
+      "num_pairs": 4000,
+      "pairs_hash": "eb07823cba4b84b30b5eb81453305ef8"
+    },
+    "1": {
+      "domain": "science",
+      "num_pairs": 237,
+      "pairs_hash": "3a8a075d236014096919185d223096de"
+    },
+    "2": {
+      "domain": "finance",
+      "num_pairs": 166,
+      "pairs_hash": "4ba2b9ba60003ad1326dfc1bf30cf134"
+    },
+    "3": {
+      "domain": "argument",
+      "num_pairs": 980,
+      "pairs_hash": "79973cb6b997e949473f51b9488c881d"
+    },
+    "4": {
+      "domain": "biomedical",
+      "num_pairs": 100,
+      "pairs_hash": "f643ffc962daa7234f36e007b19cacfe"
+    }
+  },
+  "csv_schema_version": 2,
+  "experiment_name": "das_fedavg_domain_selection",
+  "final_test_metrics": {
+    "mrr": 0.011792857142857143,
+    "ndcg_at_k": 0.01738152406750094,
+    "recall_at_k": 0.036
+  },
+  "initial_model_hash": "9db17c8aa125359008dd09ea8e4d40b7",
+  "learning_rate": 2e-06,
+  "local_epochs": 1,
+  "max_corpus_docs": 8000,
+  "max_final_test_pairs": 500,
+  "max_server_val_pairs": 400,
+  "max_train_pairs": 4000,
+  "num_clients": 5,
+  "num_rounds": 4,
+  "pre_final_test_metrics": {
+    "mrr": 0.01687222222222222,
+    "ndcg_at_k": 0.024487888538100848,
+    "recall_at_k": 0.05
+  },
+  "pre_server_val_metrics": {
+    "mrr": 0.015954365079365082,
+    "ndcg_at_k": 0.02097817024388613,
+    "recall_at_k": 0.0375
+  },
+  "relevance_scores": {
+    "0": 1.0,
+    "1": 0.47908157110214233,
+    "2": 0.012995541095733643,
+    "3": 0.042210474610328674,
+    "4": 0.3212435841560364
+  },
+  "seed": 42,
+  "target_client_id": "0",
+  "target_dataset": "nfcorpus",
+  "tau": 0.6,
+  "top_k": 10
+}

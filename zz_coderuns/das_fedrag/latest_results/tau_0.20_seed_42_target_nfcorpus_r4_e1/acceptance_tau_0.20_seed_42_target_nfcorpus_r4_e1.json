@@ -1,0 +1,53 @@
+{
+  "distinct_round_trajectories": {
+    "applicable": true,
+    "evidence": {
+      "rounds": 4,
+      "unique_hashes": 4
+    },
+    "passed": true
+  },
+  "positive_tau_excludes_some_clients": {
+    "applicable": true,
+    "evidence": {
+      "excluded_per_round": [
+        2,
+        2,
+        2
+      ]
+    },
+    "passed": true
+  },
+  "relevance_scores_ordered": {
+    "applicable": true,
+    "evidence": {
+      "scores": {
+        "0": "1.0000",
+        "1": "0.4791",
+        "2": "0.0130",
+        "3": "0.0422",
+        "4": "0.3212"
+      }
+    },
+    "passed": true
+  },
+  "selection_matches_threshold_policy": {
+    "applicable": true,
+    "evidence": {
+      "per_round": [
+        true,
+        true,
+        true
+      ]
+    },
+    "passed": true
+  },
+  "target_client_always_selected": {
+    "applicable": true,
+    "passed": true
+  },
+  "tau_zero_selects_all": {
+    "applicable": false,
+    "passed": null
+  }
+}

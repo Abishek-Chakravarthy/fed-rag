@@ -1,0 +1,50 @@
+{
+  "acceptance_report": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_csv_files/acceptance_alpha_0.3_seed_42_mode_shuffle_ratio_0p70_r8_e2.json",
+  "alpha": 0.33,
+  "batch_size": 8,
+  "canonical_log_file": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_log_files/log_alpha_0.3_seed_42_mode_shuffle_ratio_0p70_r8_e2.log",
+  "canonical_results_csv": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_csv_files/results_alpha_0.3_seed_42_mode_shuffle_ratio_0p70_r8_e2.csv",
+  "client_split_summary": {
+    "0": {
+      "num_pairs": 502,
+      "pairs_hash": "eda249848cded5fbcf11a2f0cbfa2d53"
+    },
+    "1": {
+      "num_pairs": 503,
+      "pairs_hash": "9ba812311097503ffa46e70fc058a032"
+    },
+    "2": {
+      "num_pairs": 495,
+      "pairs_hash": "2af7409158cb61d0a17871523c1848aa"
+    }
+  },
+  "csv_schema_version": 2,
+  "dataset_name": "nfcorpus",
+  "experiment_name": "qa_fedavg_noisy_client",
+  "initial_model_hash": "9db17c8aa125359008dd09ea8e4d40b7",
+  "learning_rate": 5e-06,
+  "local_epochs": 2,
+  "max_corpus_docs": 3000,
+  "max_eval_pairs": 300,
+  "max_train_pairs": 1500,
+  "noise_mode": "shuffle",
+  "noise_ratio": 0.7,
+  "noisy_client_id": "2",
+  "num_clients": 3,
+  "num_rounds": 8,
+  "pre_metrics": {
+    "mrr": 0.04947619047619047,
+    "ndcg_at_k": 0.06066727480868735,
+    "recall_at_k": 0.09666666666666666
+  },
+  "quality_signal": {
+    "client_metric_source": "HuggingFaceTrainerForLSR.train",
+    "loss_stage": "post_local_training",
+    "objective": "LSR training loss",
+    "strategy_metric_key": "loss",
+    "trainer_return_value": "TrainResult(loss=output.training_loss)"
+  },
+  "seed": 42,
+  "top_k": 10,
+  "train_split_hash": "9f050fab6607b2159c16aa1ce998b71f"
+}

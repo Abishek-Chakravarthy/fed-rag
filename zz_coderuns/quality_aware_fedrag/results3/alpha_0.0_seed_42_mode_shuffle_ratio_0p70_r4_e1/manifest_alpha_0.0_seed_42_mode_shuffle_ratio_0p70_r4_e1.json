@@ -1,0 +1,57 @@
+{
+  "acceptance_report": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_csv_files/acceptance_alpha_0.0_seed_42_mode_shuffle_ratio_0p70_r4_e1.json",
+  "alpha": 0.0,
+  "batch_size": 8,
+  "canonical_log_file": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_log_files/log_alpha_0.0_seed_42_mode_shuffle_ratio_0p70_r4_e1.log",
+  "canonical_results_csv": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_csv_files/results_alpha_0.0_seed_42_mode_shuffle_ratio_0p70_r4_e1.csv",
+  "client_split_mode": "equal",
+  "client_split_summary": {
+    "0": {
+      "num_pairs": 500,
+      "pairs_hash": "c979843e6211cc0f4affb2f18aabb412"
+    },
+    "1": {
+      "num_pairs": 500,
+      "pairs_hash": "3830d27ad7abd49d42ef326ddbe40608"
+    },
+    "2": {
+      "num_pairs": 500,
+      "pairs_hash": "f8ebd476d24f85d7613258304159cdb1"
+    }
+  },
+  "csv_schema_version": 3,
+  "dataset_name": "nfcorpus",
+  "experiment_name": "qa_fedavg_noisy_client",
+  "initial_model_hash": "9db17c8aa125359008dd09ea8e4d40b7",
+  "learning_rate": 2e-06,
+  "local_epochs": 1,
+  "max_corpus_docs": 3000,
+  "max_eval_pairs": 300,
+  "max_train_pairs": 1500,
+  "noise_mode": "shuffle",
+  "noise_ratio": 0.7,
+  "noisy_client_id": "2",
+  "num_clients": 3,
+  "num_rounds": 4,
+  "pre_metrics": {
+    "mrr": 0.052878306878306865,
+    "ndcg_at_k": 0.06783770460138389,
+    "recall_at_k": 0.11666666666666667
+  },
+  "pre_probe_metrics": {
+    "mrr": 0.016666666666666666,
+    "ndcg_at_k": 0.016666666666666666,
+    "recall_at_k": 0.016666666666666666
+  },
+  "quality_probe_pairs_count": 60,
+  "quality_signal": {
+    "client_metric_source": "shared_clean_probe_retrieval",
+    "loss_stage": "post_local_training_clean_probe",
+    "objective": "clean probe retrieval loss",
+    "strategy_metric_key": "loss",
+    "trainer_return_value": "1 - 0.5 * (probe_mrr + probe_ndcg_at_k)"
+  },
+  "seed": 42,
+  "top_k": 10,
+  "train_split_hash": "6c5afc7837fadfc8b9fa1ac2eebe3958"
+}

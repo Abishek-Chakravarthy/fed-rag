@@ -1,0 +1,115 @@
+{
+  "acceptance_report": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_csv_files/acceptance_alpha_0.3_seed_42_mode_hard_negative_ratio_0p80_r4_e1.json",
+  "alpha": 0.3,
+  "batch_size": 8,
+  "best_round": 2,
+  "canonical_log_file": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_log_files/log_alpha_0.3_seed_42_mode_hard_negative_ratio_0p80_r4_e1.log",
+  "canonical_results_csv": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_csv_files/results_alpha_0.3_seed_42_mode_hard_negative_ratio_0p80_r4_e1.csv",
+  "client_split_mode": "unequal",
+  "client_split_summary": {
+    "holdout": {
+      "0": {
+        "num_pairs": 120,
+        "pairs_hash": "be4c185e71685313e79d0a1002f7077a"
+      },
+      "1": {
+        "num_pairs": 120,
+        "pairs_hash": "b59e98aad43ad544f37df70d962bafc0"
+      },
+      "2": {
+        "num_pairs": 120,
+        "pairs_hash": "63c6a361eb23c4109e4d37c7ea553fa3"
+      },
+      "3": {
+        "num_pairs": 120,
+        "pairs_hash": "b428b6ddfa8617ead05e53f3483ccc27"
+      },
+      "4": {
+        "num_pairs": 320,
+        "pairs_hash": "4978ed717487a0291e55c34a05fa97b2"
+      }
+    },
+    "train": {
+      "0": {
+        "num_pairs": 480,
+        "pairs_hash": "e5be5f9c36c1b73f371af5c411b6984f"
+      },
+      "1": {
+        "num_pairs": 480,
+        "pairs_hash": "e4bfb3ac8dda86d124ea096ee6176f72"
+      },
+      "2": {
+        "num_pairs": 480,
+        "pairs_hash": "82121539c95f2ef2b462bfc1bd66c66f"
+      },
+      "3": {
+        "num_pairs": 480,
+        "pairs_hash": "1e0189674039baa9b3254b17908c221f"
+      },
+      "4": {
+        "num_pairs": 1280,
+        "pairs_hash": "bb743fd7c3f4ea417698c5efa47f9c96"
+      }
+    }
+  },
+  "csv_schema_version": 4,
+  "dataset_name": "nfcorpus",
+  "experiment_name": "qa_fedavg_noisy_client",
+  "final_test_metrics": {
+    "mrr": 0.01972698412698412,
+    "ndcg_at_k": 0.03177903966340644,
+    "recall_at_k": 0.072
+  },
+  "initial_model_hash": "9db17c8aa125359008dd09ea8e4d40b7",
+  "learning_rate": 2e-06,
+  "local_epochs": 1,
+  "max_corpus_docs": 8000,
+  "max_final_test_pairs": 500,
+  "max_server_val_pairs": 400,
+  "max_shared_quality_pairs": 400,
+  "max_train_pairs": 4000,
+  "model_selection": {
+    "criterion": "best_server_val_mrr_then_ndcg",
+    "selected_best_round": 2
+  },
+  "noise_mode": "hard_negative",
+  "noise_ratio": 0.8,
+  "noisy_client_data_fraction": 0.4,
+  "noisy_client_id": "4",
+  "num_clients": 5,
+  "num_rounds": 4,
+  "pre_final_test_metrics": {
+    "mrr": 0.019738888888888886,
+    "ndcg_at_k": 0.03182560577232025,
+    "recall_at_k": 0.072
+  },
+  "pre_holdout_metrics": {
+    "mrr": 0.026286706349206344,
+    "ndcg_at_k": 0.03657324204604263,
+    "recall_at_k": 0.07125
+  },
+  "pre_metrics": {
+    "mrr": 0.02425297619047619,
+    "ndcg_at_k": 0.033658306678763766,
+    "recall_at_k": 0.065
+  },
+  "pre_shared_quality_metrics": {
+    "mrr": 0.04140873015873016,
+    "ndcg_at_k": 0.05278420869086222,
+    "recall_at_k": 0.09
+  },
+  "quality_beta": 5.0,
+  "quality_holdout_ratio": 0.2,
+  "quality_rank_top_k": 30,
+  "quality_signal": {
+    "client_metric_source": "shared_rank_displacement",
+    "loss_stage": "post_local_training_shared_comparison",
+    "objective": "shared correct-document rank displacement",
+    "strategy_metric_key": "loss",
+    "trainer_return_value": "mean(max(rank_after - rank_before, 0)) - 0.5 * mean(max(rank_before - rank_after, 0))"
+  },
+  "seed": 42,
+  "shared_quality_pairs_count": 400,
+  "top_k": 10,
+  "train_split_hash": "e30411a510e82392e07da42186be5f61"
+}

@@ -1,0 +1,73 @@
+{
+  "acceptance_report": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_csv_files/acceptance_alpha_1.0_seed_42_mode_hard_negative_ratio_0p80_r4_e1.json",
+  "alpha": 1.0,
+  "batch_size": 8,
+  "canonical_log_file": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_log_files/log_alpha_1.0_seed_42_mode_hard_negative_ratio_0p80_r4_e1.log",
+  "canonical_results_csv": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_csv_files/results_alpha_1.0_seed_42_mode_hard_negative_ratio_0p80_r4_e1.csv",
+  "client_split_mode": "unequal",
+  "client_split_summary": {
+    "holdout": {
+      "0": {
+        "num_pairs": 90,
+        "pairs_hash": "d09303af278a3ad9026821e11e5f8c6c"
+      },
+      "1": {
+        "num_pairs": 90,
+        "pairs_hash": "0fe35b5bc4b10937bf8e0cdc6327e300"
+      },
+      "2": {
+        "num_pairs": 120,
+        "pairs_hash": "ed6d9928e77d1b897f1d8dd25ad13f55"
+      }
+    },
+    "train": {
+      "0": {
+        "num_pairs": 360,
+        "pairs_hash": "6414a1117149c8ff67a0c141d818d94b"
+      },
+      "1": {
+        "num_pairs": 360,
+        "pairs_hash": "81ae4272966caf2e7ff76d92a2e16c7a"
+      },
+      "2": {
+        "num_pairs": 480,
+        "pairs_hash": "48f8f54d18a9e8b1867bb386789621d0"
+      }
+    }
+  },
+  "csv_schema_version": 3,
+  "dataset_name": "nfcorpus",
+  "experiment_name": "qa_fedavg_noisy_client",
+  "initial_model_hash": "9db17c8aa125359008dd09ea8e4d40b7",
+  "learning_rate": 2e-06,
+  "local_epochs": 1,
+  "max_corpus_docs": 3000,
+  "max_eval_pairs": 300,
+  "max_train_pairs": 1500,
+  "noise_mode": "hard_negative",
+  "noise_ratio": 0.8,
+  "noisy_client_id": "2",
+  "num_clients": 3,
+  "num_rounds": 4,
+  "pre_metrics": {
+    "mrr": 0.052878306878306865,
+    "ndcg_at_k": 0.06783770460138389,
+    "recall_at_k": 0.11666666666666667
+  },
+  "pre_probe_metrics": {
+    "mrr": 0.015392857142857142,
+    "ndcg_at_k": 0.021893636364686223,
+    "recall_at_k": 0.043333333333333335
+  },
+  "quality_holdout_ratio": 0.2,
+  "quality_signal": {
+    "client_metric_source": "client_specific_clean_holdout_retrieval",
+    "loss_stage": "post_local_training_clean_holdout",
+    "objective": "log-scaled clean holdout retrieval loss",
+    "strategy_metric_key": "loss",
+    "trainer_return_value": "-log(0.5 * (holdout_mrr + holdout_ndcg_at_k) + eps)"
+  },
+  "seed": 42,
+  "top_k": 10,
+  "train_split_hash": "9e45947cc8e1245ff71225572797abca"
+}

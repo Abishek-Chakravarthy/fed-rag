@@ -1,0 +1,79 @@
+{
+  "acceptance_report": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_csv_files/acceptance_alpha_0.7_seed_42_mode_hard_negative_ratio_0p80_r4_e1.json",
+  "alpha": 0.7,
+  "batch_size": 8,
+  "canonical_log_file": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_log_files/log_alpha_0.7_seed_42_mode_hard_negative_ratio_0p80_r4_e1.log",
+  "canonical_results_csv": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/output_csv_files/results_alpha_0.7_seed_42_mode_hard_negative_ratio_0p80_r4_e1.csv",
+  "client_split_mode": "unequal",
+  "client_split_summary": {
+    "holdout": {
+      "0": {
+        "num_pairs": 90,
+        "pairs_hash": "f85683b8a48a96b2c0c1238844c44003"
+      },
+      "1": {
+        "num_pairs": 90,
+        "pairs_hash": "543fbd5633027f06b442663b2257a167"
+      },
+      "2": {
+        "num_pairs": 120,
+        "pairs_hash": "e96422e269c2c4105f9fee920e801d05"
+      }
+    },
+    "train": {
+      "0": {
+        "num_pairs": 360,
+        "pairs_hash": "1311f193af53f50cd2e0b7f5b1496fde"
+      },
+      "1": {
+        "num_pairs": 360,
+        "pairs_hash": "53e5b10c7d39c477387090f53a714fa4"
+      },
+      "2": {
+        "num_pairs": 480,
+        "pairs_hash": "3652812c57ecd7e8494f3126d85c37bd"
+      }
+    }
+  },
+  "csv_schema_version": 3,
+  "dataset_name": "nfcorpus",
+  "experiment_name": "qa_fedavg_noisy_client",
+  "initial_model_hash": "9db17c8aa125359008dd09ea8e4d40b7",
+  "learning_rate": 2e-06,
+  "local_epochs": 1,
+  "max_corpus_docs": 3000,
+  "max_eval_pairs": 300,
+  "max_train_pairs": 1500,
+  "noise_mode": "hard_negative",
+  "noise_ratio": 0.8,
+  "noisy_client_id": "2",
+  "num_clients": 3,
+  "num_rounds": 4,
+  "pre_holdout_metrics": {
+    "mrr": 0.022740740740740742,
+    "ndcg_at_k": 0.03140150669836675,
+    "recall_at_k": 0.06
+  },
+  "pre_metrics": {
+    "mrr": 0.03660978835978836,
+    "ndcg_at_k": 0.049805296585086554,
+    "recall_at_k": 0.09333333333333334
+  },
+  "pre_shared_quality_metrics": {
+    "mrr": 0.04851190476190476,
+    "ndcg_at_k": 0.05967102819022259,
+    "recall_at_k": 0.09583333333333334
+  },
+  "quality_holdout_ratio": 0.2,
+  "quality_signal": {
+    "client_metric_source": "shared_clean_comparison_retrieval",
+    "loss_stage": "post_local_training_shared_comparison",
+    "objective": "log-scaled shared comparison retrieval loss",
+    "strategy_metric_key": "loss",
+    "trainer_return_value": "-log(0.5 * (shared_mrr + shared_ndcg_at_k) + eps)"
+  },
+  "seed": 42,
+  "shared_quality_pairs_count": 240,
+  "top_k": 10,
+  "train_split_hash": "e0b8bcb5fdcfcb374f8720e0b6f9e38c"
+}
