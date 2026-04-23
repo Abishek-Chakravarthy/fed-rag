@@ -535,7 +535,9 @@ def set_retriever_weights(retriever, parameters):
 def make_post_aggregation_evaluator():
     def evaluator(server_round: int, aggregated_ndarrays):
         del server_round
-        retriever = create_retriever()
+        # Rebuild the same retriever architecture used by clients so the
+        # aggregated query-encoder weights map onto an identical state_dict.
+        retriever = create_retriever(CURRENT_RETRIEVER_MODEL)
         set_retriever_weights(retriever, aggregated_ndarrays)
         return evaluate_retriever(
             retriever,
