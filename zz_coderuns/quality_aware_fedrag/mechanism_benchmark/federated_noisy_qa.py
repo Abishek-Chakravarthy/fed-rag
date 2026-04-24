@@ -270,7 +270,31 @@ def split_noisy(
 
             if num_corrupt > 0:
                 original_responses = [p["response"] for p in data[:num_corrupt]]
-                replacement_responses = deranged_shuffle(original_responses, rng)
+
+                # Dispatch noise based on CURRENT_NOISE_MODE
+                if CURRENT_NOISE_MODE == "shuffle":
+                    replacement_responses = deranged_shuffle(original_responses, rng)
+                elif CURRENT_NOISE_MODE == "random_negative":
+                    replacement_responses = sample_random_negative_responses(
+                        count=num_corrupt,
+                        rng=rng,
+                        doc_lookup=DOC_LOOKUP,
+                        original_responses=original_responses,
+                    )
+                elif CURRENT_NOISE_MODE == "hard_negative":
+                    replacement_responses = sample_hard_negative_responses(
+                        pairs=data[:num_corrupt],
+                        rng=rng,
+                    )
+                elif CURRENT_NOISE_MODE == "cross_domain":
+                    pool = NOISE_CONTEXT.get("cross_domain_pool", [])
+                    if not pool:
+                        raise ValueError("Cross-domain noise requested but no pool is available.")
+                    replacement_responses = [rng.choice(pool) for _ in range(num_corrupt)]
+                else:
+                    # Default fallback to shuffle
+                    replacement_responses = deranged_shuffle(original_responses, rng)
+
                 corrupted_data = []
                 for i in range(num_corrupt):
                     pair = dict(data[i])
@@ -278,7 +302,7 @@ def split_noisy(
                     corrupted_data.append(pair)
                 corrupted_data.extend(data[num_corrupt:])
                 train_splits[cid] = corrupted_data
-                status = f"{num_corrupt} CORRUPTED ({client_noise_ratio*100:.0f}% noise)"
+                status = f"{num_corrupt} CORRUPTED ({client_noise_ratio*100:.0f}% {CURRENT_NOISE_MODE} noise)"
             else:
                 status = "CLEAN"
 
