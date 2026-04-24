@@ -1,6 +1,6 @@
 # Improvement Plan — QA-FedAvg Mechanism Benchmark
 
-> Anchored to `latest_results/experiment_log.md`. Update the log after every run.
+> Anchored to `exp_02_results/experiment_log.md`. Update the log after every run.
 
 ---
 
@@ -39,7 +39,7 @@
 
 **Config change**: Switched `MECHANISM_RETRIEVER_MODEL` to `all-MiniLM-L6-v2`.
 
-**Results** (from `latest_results/`, Run 2 in experiment_log):
+**Results** (from `exp_02_results/`, Run 2 in experiment_log):
 
 ### Server validation MRR (used for best-round selection)
 
@@ -78,77 +78,92 @@
 
 ---
 
-## Step 3: Increase Noise Separation ← **MUST RE-RUN**
+## Step 3: Increase Noise Separation ✅ COMPLETED — FAILED
 
-**Why**: The quality signal fails to discriminate because 30% and 70% shuffle noise don't create enough retrieval quality difference between clients. The rank-displacement values are nearly identical across all 5 clients.
+**What changed**: Noise ladder from `{0, 0, 0, 0.3, 0.7}` to `{0, 0, 0, 0.5, 0.9}`.
 
-**What to change**: Noise ladder from `{0, 0, 0, 0.3, 0.7}` to `{0, 0, 0, 0.5, 0.9}`.
+**Results** (from `exp_03_results/`): **Identical to exp_02.** All 16 model hashes match byte-for-byte.
 
-**What to update in `federated_noisy_qa.py`**: ✅ Already done (commit `23a9643`).
+### Critical discovery: Shuffle noise is invisible to LSR training
 
-**exp_03 attempt**: ⚠️ **INVALID** — model hashes are identical to exp_02 across all 16 runs (4α × 4R). The Kaggle notebooks cloned an older version of `q-fedrag2` before the noise change was pushed. The manifests log the intended 0.5/0.9 values, but the actual training used 0.3/0.7.
+The manifest train data hashes for clients 3 and 4 ARE different (confirming more data was corrupted), but the aggregated models are identical. This means:
 
-**Action**: Verify the latest commit is on the remote, then re-run all 4 alpha notebooks on Kaggle. Store results in `exp_03b_results/`.
+**Shuffling responses within the same domain does not change LSR gradients.** The LSR loss (KL-divergence between retriever scores and LM scores) treats an in-domain shuffled response almost the same as the correct response — the LM generates similar scores for any same-domain passage, and the retriever's cosine similarity doesn't distinguish well between correct and shuffled same-domain text.
+
+**Implication**: No quality signal (rank-displacement, holdout MRR, or anything else) can discriminate between clean and noisy clients when the noise produces no measurable effect on the model.
+
+**Gate**: ❌ **FAILED** — `lower_quality_clients_downweighted` fails. No improvement over exp_02.
+
+---
+
+## Step 4: Change Noise Type + Quality Signal ← **MUST RE-RUN (bugfix applied)**
+
+The original Step 4 was "change quality signal." But exp_03 revealed a deeper problem: **shuffle noise itself is invisible to LSR**, so no quality signal can detect it. We need to fix the noise type first.
+
+### Step 4a: Switch to `random_negative` noise
+
+**Why**: `random_negative` replaces responses with random documents from the corpus that are NOT the correct answer. Unlike shuffle (which swaps between similar in-domain passages), random negatives pair queries with unrelated documents. This should produce clearly different LM scores and retriever scores, creating genuinely destructive gradients.
+
+**Config change**: `MECHANISM_NOISE_MODE = "random_negative"` (was `"shuffle"`). ✅ Done.
+
+**exp_04a attempt**: ⚠️ **INVALID** — model hashes identical to exp_02/exp_03 because of a **code bug**:
+- The mechanism benchmark path in `split_noisy()` (lines 264-290) **hardcoded `deranged_shuffle`** for all noise, completely ignoring `CURRENT_NOISE_MODE`
+- `MECHANISM_NOISE_MODE` was logged to the manifest but never dispatched in the actual corruption loop
+- Only the robustness benchmark path had the full noise mode dispatch
+
+**Bugfix applied**: Updated the mechanism path to dispatch based on `CURRENT_NOISE_MODE`, supporting `shuffle`, `random_negative`, `hard_negative`, and `cross_domain`.
+
+**Action**: Push the bugfix, then re-run all 4 alpha notebooks. Store results in `exp_04b_results/`.
+
+**Sanity check**: α=0.0 R1 model hash must differ from `5706c0d7...` AND client 3/4 train hashes must differ from exp_03.
+
+### Step 4b: If random_negative works, optionally also try holdout MRR signal
+
+If the noisy clients now produce visibly worse models (different hashes, worse rank-displacement), we can additionally try switching the quality signal to holdout MRR for even stronger discrimination:
+- Each client evaluates on their clean holdout (160 pairs) after training
+- Send `loss = -holdout_mrr` to the server
 
 **Run**: Full α sweep (0.0, 0.3, 0.7, 1.0)
 
 **Gate**:
-1. `lower_quality_clients_downweighted` passes for at least one α>0 in at least 3 out of 4 rounds
-2. At least one α>0 beats α=0.0 on final test MRR or NDCG
-3. **Sanity check**: α=0.0 model hashes must differ from exp_02 (confirming different training data)
+1. α=0.0 model hashes differ from exp_02/exp_03/exp_04a (confirming noise actually affects training)
+2. `lower_quality_clients_downweighted` passes for at least one α>0 in ≥3/4 rounds
+3. At least one α>0 beats α=0.0 on final test MRR or NDCG
 
 - **Pass** → run multi-seed. 🎉
-- **Fail** → proceed to Step 4.
-
----
-
-## Step 4: Change Quality Signal
-
-**Why**: If rank-displacement can't discriminate even with 90% noise, the signal itself may be fundamentally too noisy for this setup.
-
-**What to change**: Replace rank-displacement with **holdout evaluation MRR** as the quality signal sent to the server.
-- Each client already has a clean holdout set (160 pairs)
-- After local training, evaluate the client's retriever on its holdout
-- Send `loss = -holdout_mrr` to the server (lower MRR → higher loss → lower weight under QA-FedAvg)
-- This is a much more direct signal — noisy training should clearly hurt holdout retrieval
-
-**Run**: Full α-sweep with the stronger noise from Step 3.
-
-**Gate**: Same as Step 3.
-
-- **Pass** → run multi-seed. 🎉
-- **Fail** → the noise levels may be too subtle even for direct evaluation. Reframe the contribution as demonstrating the mechanism under extreme noise, or pivot to DAS-FedAvg as the primary contribution.
+- **Fail** → try holdout MRR signal (Step 4b), or reframe contribution.
 
 ---
 
 ## Decision Tree
 
 ```
-Step 1: Can LSR training improve retrieval at all?  ✅ YES (variant 1c: +10.3%)
+Step 1: Can LSR training improve retrieval?  ✅ YES (+10.3%)
   │
-  └── Step 2: Does federated LSR still improve? Does α help?  ✅ PARTIALLY
-              │  Training works (Gate 1 ✅). α>0 delays degradation by 1 round (Gate 2 ✅ on val).
-              │  But final test MRR is flat. Quality signal doesn't discriminate noisy clients.
+  └── Step 2: Federated LSR + α-sweep  ✅ PARTIAL (training helps, α delays degradation)
               │
-              └── Step 3: Increase noise to 0/0/0/0.5/0.9.  ← YOU ARE HERE
+              └── Step 3: Increase shuffle noise  ❌ FAILED (shuffle is invisible to LSR)
                            │
-                           ├── Quality signal discriminates → Done! 🎉
-                           │
-                           └── Still flat → Step 4: Change quality signal.
-                                             │
-                                             ├── Works → Done! 🎉
-                                             └── Fails → Reframe contribution.
+                           └── Step 4a: Switch to random_negative noise  ← YOU ARE HERE
+                                         │  (exp_04a invalid due to code bug — bugfix applied)
+                                         │
+                                         ├── Noise visible + α helps → Done! 🎉
+                                         │
+                                         ├── Noise visible but α flat → Step 4b: try holdout MRR signal
+                                         │
+                                         └── Noise still invisible → Reframe contribution
 ```
 
 ---
 
 ## Do NOT Repeat
 
-- ❌ `paraphrase-MiniLM-L3-v2` for mechanism benchmark (diagnostic proved it can't learn from LSR)
-- ❌ LR=5e-7 (diagnostic showed negligible movement for both retrievers)
-- ❌ LR=5e-6 (known to cause collapse)
-- ❌ Epochs ≥ 2 (known to cause collapse)
-- ❌ Rounds ≥ 6 (known to cause degradation)
-- ❌ Hard-negative noise before shuffle works (known to be always flat)
+- ❌ `paraphrase-MiniLM-L3-v2` for mechanism benchmark (can't learn from LSR)
+- ❌ LR=5e-7 (negligible movement)
+- ❌ LR=5e-6 (causes collapse)
+- ❌ Epochs ≥ 2 (causes collapse)
+- ❌ Rounds ≥ 6 (causes degradation)
+- ❌ Hard-negative noise before shuffle works (always flat)
 - ❌ Mixed noise mode (known to fail)
-- ❌ Noise ladder 0/0/0/0.3/0.7 with `all-MiniLM-L6-v2` (Run 2: quality signal doesn't discriminate)
+- ❌ Shuffle noise at ANY ratio (exp_03: invisible to LSR, models identical regardless of ratio)
+- ❌ Running mechanism benchmark without the noise dispatch bugfix (exp_04a: code always used deranged_shuffle)
