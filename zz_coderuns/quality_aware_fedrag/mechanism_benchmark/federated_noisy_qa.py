@@ -67,8 +67,8 @@ MECHANISM_CLIENT_NOISE_MAP = {
     "0": 0.0,
     "1": 0.0,
     "2": 0.0,
-    "3": 0.3,
-    "4": 0.7,
+    "3": 0.5,   # Step 3: was 0.3 — increased to widen quality gap for discrimination
+    "4": 0.9,   # Step 3: was 0.7 — increased to widen quality gap for discrimination
 }
 MECHANISM_NOISE_MODE = "shuffle"
 MECHANISM_CLIENT_SPLIT_MODE = "equal"
