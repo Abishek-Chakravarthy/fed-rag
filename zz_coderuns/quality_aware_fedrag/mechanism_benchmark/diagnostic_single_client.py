@@ -5,8 +5,9 @@ Trains a single retriever on clean NFCorpus data (no federation, no noise)
 and measures MRR/NDCG before and after. Sweeps retriever model and LR.
 
 Usage:
-    python diagnostic_single_client.py
-    python diagnostic_single_client.py --variants 1a,1c      # run specific variants only
+    python diagnostic_single_client.py                         # run all variants
+    python diagnostic_single_client.py --variants 1a,1c        # run specific variants
+    python diagnostic_single_client.py --run-single 1a         # internal: run one variant in isolation
 """
 
 import torch
@@ -15,30 +16,11 @@ torch.set_num_threads(1)
 import argparse
 import json
 import os
+import subprocess
 import sys
-
-from datasets import Dataset
-from datasets.utils import logging as datasets_logging
-from sentence_transformers import SentenceTransformerTrainingArguments
-from transformers import GenerationConfig
-from transformers.utils import logging as transformers_logging
-from accelerate.state import AcceleratorState
-
-from fed_rag import RAGSystem, RAGConfig
-from fed_rag.generators import HFPretrainedModelGenerator
-from fed_rag.trainers import HuggingFaceTrainerForLSR
-
-from prepare_beir_data import (
-    setup_dataset,
-    evaluate_retriever,
-    TOP_K,
-    SEED,
-)
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-datasets_logging.set_verbosity_error()
-transformers_logging.set_verbosity_error()
 
 GENERATOR_MODEL = "distilgpt2"
 BATCH_SIZE = 8
@@ -75,12 +57,31 @@ def get_generator_load_kwargs() -> dict:
     return {"torch_dtype": torch.float32}
 
 
-def run_variant(vid: str, retriever_model: str, lr: float):
+def run_single_variant(vid: str, retriever_model: str, lr: float):
+    """Run one variant in the current process (called via --run-single)."""
+    from datasets import Dataset
+    from datasets.utils import logging as datasets_logging
+    from sentence_transformers import SentenceTransformerTrainingArguments
+    from transformers import GenerationConfig
+    from transformers.utils import logging as transformers_logging
+
+    from fed_rag import RAGSystem, RAGConfig
+    from fed_rag.generators import HFPretrainedModelGenerator
+    from fed_rag.trainers import HuggingFaceTrainerForLSR
+
+    from prepare_beir_data import (
+        setup_dataset,
+        evaluate_retriever,
+        TOP_K,
+        SEED,
+    )
+
+    datasets_logging.set_verbosity_error()
+    transformers_logging.set_verbosity_error()
+
     print(f"\n{'=' * 70}")
     print(f"Variant {vid}: retriever={retriever_model.split('/')[-1]}, lr={lr}")
     print(f"{'=' * 70}")
-
-    AcceleratorState._reset_state()
 
     # Load data
     data = setup_dataset(
@@ -149,7 +150,6 @@ def run_variant(vid: str, retriever_model: str, lr: float):
 
     # Train
     print(f"  Training on {len(train_dataset)} clean pairs, lr={lr}, 1 epoch ...")
-    AcceleratorState._reset_state()
     result = retriever_trainer.train()
     print(f"  Training loss: {result.loss:.6f}")
 
@@ -166,7 +166,7 @@ def run_variant(vid: str, retriever_model: str, lr: float):
     verdict = "IMPROVED" if test_delta > 5 else ("MARGINAL" if test_delta > 0 else "DEGRADED")
     print(f"  delta val_MRR={val_delta:+.1f}%  delta test_MRR={test_delta:+.1f}%  -> {verdict}")
 
-    return {
+    result_dict = {
         "id": vid,
         "retriever": retriever_model,
         "lr": lr,
@@ -184,6 +184,35 @@ def run_variant(vid: str, retriever_model: str, lr: float):
         "verdict": verdict,
     }
 
+    # Save individual result
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    result_path = os.path.join(OUTPUT_DIR, f"result_{vid}.json")
+    with open(result_path, "w") as f:
+        json.dump(result_dict, f, indent=2)
+    print(f"  Result saved to {result_path}")
+
+
+def run_variant_subprocess(vid: str):
+    """Launch a variant as a separate subprocess to get a clean Accelerator state."""
+    script_path = os.path.abspath(__file__)
+    cmd = [sys.executable, "-u", script_path, "--run-single", vid]
+
+    print(f"\n--- Launching variant {vid} as subprocess ---")
+    process = subprocess.Popen(
+        cmd,
+        cwd=os.path.dirname(script_path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    for line in process.stdout:
+        print(line, end="")
+
+    process.wait()
+    return process.returncode == 0
+
 
 def main():
     parser = argparse.ArgumentParser(description="Step 1 Diagnostic: Non-federated LSR training")
@@ -193,23 +222,44 @@ def main():
         default=",".join(ALL_VARIANTS.keys()),
         help="Comma-separated variant IDs to run (default: all)",
     )
+    parser.add_argument(
+        "--run-single",
+        type=str,
+        default=None,
+        help="Internal: run a single variant in this process (used by subprocess dispatch)",
+    )
     args = parser.parse_args()
 
+    # If --run-single is set, run that one variant and exit
+    if args.run_single:
+        vid = args.run_single
+        if vid not in ALL_VARIANTS:
+            print(f"Unknown variant: {vid}")
+            sys.exit(1)
+        cfg = ALL_VARIANTS[vid]
+        run_single_variant(vid, cfg["retriever"], cfg["lr"])
+        return
+
+    # Otherwise, orchestrate all variants as subprocesses
     selected_ids = [v.strip() for v in args.variants.split(",")]
-    variants = [(vid, ALL_VARIANTS[vid]) for vid in selected_ids if vid in ALL_VARIANTS]
+    selected_ids = [v for v in selected_ids if v in ALL_VARIANTS]
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    results = []
-    for vid, cfg in variants:
-        try:
-            r = run_variant(vid, cfg["retriever"], cfg["lr"])
-            results.append(r)
-        except Exception as e:
-            print(f"  Variant {vid} failed: {e}")
-            import traceback
-            traceback.print_exc()
+    for vid in selected_ids:
+        success = run_variant_subprocess(vid)
+        if not success:
+            print(f"  WARNING: Variant {vid} subprocess returned non-zero exit code")
 
+    # Collect results from individual files
+    results = []
+    for vid in selected_ids:
+        result_path = os.path.join(OUTPUT_DIR, f"result_{vid}.json")
+        if os.path.exists(result_path):
+            with open(result_path) as f:
+                results.append(json.load(f))
+
+    # Print summary
     print(f"\n\n{'=' * 95}")
     print("DIAGNOSTIC SUMMARY")
     print(f"{'=' * 95}")
@@ -223,7 +273,7 @@ def main():
             f"{r['test_mrr_delta_pct']:>+6.1f}% {r['verdict']}"
         )
 
-    # Save summary
+    # Save combined summary
     summary_path = os.path.join(OUTPUT_DIR, "diagnostic_summary.json")
     with open(summary_path, "w") as f:
         json.dump(results, f, indent=2)
