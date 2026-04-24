@@ -92,18 +92,21 @@ class LSRSentenceTransformerTrainer(SentenceTransformerTrainer):
         context_texts_batch = inputs["context_texts"]
         lm_scores = inputs["lm_scores"]
 
+        # If model is wrapped in DataParallel (e.g. multi-gpu environment), extract underlying module
+        raw_model = model.module if hasattr(model, "module") else model
+
         batch_retriever_scores = []
         for query, context_texts in zip(queries, context_texts_batch):
             # query embedding via model forward (preserves grad graph)
-            query_features = model.tokenize([query])
+            query_features = raw_model.tokenize([query])
             query_features = {
-                k: v.to(model.device) for k, v in query_features.items()
+                k: v.to(model.device if hasattr(model, "device") else raw_model.device) for k, v in query_features.items()
             }
             query_embedding = model(query_features)["sentence_embedding"]
 
             # context embeddings (no grad needed)
             with torch.no_grad():
-                context_embedding = model.encode(
+                context_embedding = raw_model.encode(
                     context_texts, convert_to_tensor=True
                 )
 
