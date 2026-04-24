@@ -70,7 +70,7 @@ MECHANISM_CLIENT_NOISE_MAP = {
     "3": 0.5,   # Step 3: was 0.3 — increased to widen quality gap for discrimination
     "4": 0.9,   # Step 3: was 0.7 — increased to widen quality gap for discrimination
 }
-MECHANISM_NOISE_MODE = "shuffle"
+MECHANISM_NOISE_MODE = "random_negative"  # Step 4a: was "shuffle" — shuffle is invisible to LSR (exp_03 proved identical models)
 MECHANISM_CLIENT_SPLIT_MODE = "equal"
 MECHANISM_RETRIEVER = MECHANISM_RETRIEVER_MODEL
 ROBUSTNESS_RETRIEVER = RETRIEVER_MODEL
