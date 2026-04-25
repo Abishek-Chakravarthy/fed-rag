@@ -56,7 +56,7 @@ NOISE_MODE = "hard_negative" # The type of noise to introduce.
 NOISY_CLIENT_ID = "4" # The client to introduce noise to.
 CLIENT_SPLIT_MODE = "unequal" # Mechanism mode overrides this to equal client sizes.
 NOISY_CLIENT_DATA_FRACTION = 0.4
-QUALITY_BETA = 5.0
+QUALITY_BETA = 1.0
 QUALITY_RANK_TOP_K = max(TOP_K * 3, 30)
 MECHANISM_CLIENT_NOISE_MAP = {
     "0": 0.0,
@@ -807,6 +807,7 @@ def write_run_manifest(
     csv_path: str,
     log_path: str,
     acceptance_path: str,
+    beta: float,
 ):
     manifest = {
         "experiment_name": "qa_fedavg_noisy_client",
@@ -832,7 +833,7 @@ def write_run_manifest(
         "quality_holdout_ratio": QUALITY_HOLDOUT_RATIO,
         "client_split_mode": CURRENT_CLIENT_SPLIT_MODE,
         "noisy_client_data_fraction": CURRENT_NOISY_CLIENT_DATA_FRACTION,
-        "quality_beta": QUALITY_BETA,
+        "quality_beta": beta,
         "quality_rank_top_k": QUALITY_RANK_TOP_K,
         "top_k": TOP_K,
         "noise_ratio": noise_ratio,
@@ -851,11 +852,11 @@ def write_run_manifest(
         "csv_schema_version": 5,
         "quality_signal": {
             "strategy_metric_key": "loss",
-            "client_metric_source": "shared_rank_displacement",
+            "client_metric_source": "delta_mrr",
             "local_training_objective": "MultipleNegativesRankingLoss (InfoNCE / contrastive)",
-            "trainer_return_value": "mean(max(rank_after - rank_before, 0)) - 0.5 * mean(max(rank_before - rank_after, 0))",
+            "trainer_return_value": "MRR_before - MRR_after (on 400-pair shared probe set)",
             "loss_stage": "post_local_training_shared_comparison",
-            "objective": "shared correct-document rank displacement",
+            "objective": "MRR degradation on shared probe — positive = degraded, negative = improved",
         },
         "model_selection": {
             "criterion": "best_server_val_mrr_then_ndcg",
@@ -997,31 +998,40 @@ def client_fn(cid: str):
 
     def audited_fit(parameters, config):
         set_retriever_weights(retriever, parameters)
+        # Compute MRR on shared probe BEFORE local training.
+        mrr_before_metrics = evaluate_retriever(
+            retriever, KNOWLEDGE_STORE, SHARED_QUALITY_PAIRS, top_k=TOP_K,
+        )
+        mrr_before = mrr_before_metrics.get("mrr", 0.0)
+        # Also capture rank state for the supplementary displacement columns.
         baseline_shared_ranks = compute_doc_ranks(
-            retriever,
-            SHARED_QUALITY_PAIRS,
-            top_k=QUALITY_RANK_TOP_K,
+            retriever, SHARED_QUALITY_PAIRS, top_k=QUALITY_RANK_TOP_K,
         )
         weights, num_examples, metrics = original_fit(parameters, config)
         train_loss = float(metrics.get("loss", 1.0))
-        quality_summary = compute_shared_quality_signal(
-            retriever,
-            baseline_shared_ranks,
+        # Compute MRR on shared probe AFTER local training.
+        mrr_after_metrics = evaluate_retriever(
+            retriever, KNOWLEDGE_STORE, SHARED_QUALITY_PAIRS, top_k=TOP_K,
         )
+        mrr_after = mrr_after_metrics.get("mrr", 0.0)
+        # delta_mrr > 0 means retriever degraded; < 0 means it improved.
+        # Used directly as quality loss: server downweights clients with positive delta_mrr.
+        delta_mrr = mrr_before - mrr_after
+        quality_summary = compute_shared_quality_signal(retriever, baseline_shared_ranks)
         holdout_metrics = compute_client_holdout_metrics(retriever, cid)
         metrics["train_loss"] = train_loss
-        metrics["loss"] = quality_summary["quality_loss"]
-        metrics["quality_loss"] = quality_summary["quality_loss"]
-        metrics["quality_metric_name"] = "shared_rank_displacement"
-        metrics["quality_metric_value"] = quality_summary["quality_metric_value"]
+        metrics["loss"] = delta_mrr
+        metrics["quality_loss"] = delta_mrr
+        metrics["quality_metric_name"] = "delta_mrr"
+        metrics["quality_metric_value"] = -delta_mrr  # positive = improvement
         metrics["probe_size"] = len(CLIENT_QUALITY_HOLDOUTS[cid])
         metrics["probe_mrr"] = holdout_metrics.get("mrr", 0.0)
         metrics["probe_recall_at_k"] = holdout_metrics.get("recall_at_k", 0.0)
         metrics["probe_ndcg_at_k"] = holdout_metrics.get("ndcg_at_k", 0.0)
         metrics["shared_quality_size"] = len(SHARED_QUALITY_PAIRS)
-        metrics["shared_quality_mrr"] = quality_summary["shared_mrr"]
-        metrics["shared_quality_recall_at_k"] = quality_summary["shared_recall_at_k"]
-        metrics["shared_quality_ndcg_at_k"] = quality_summary["shared_ndcg_at_k"]
+        metrics["shared_quality_mrr"] = mrr_after
+        metrics["shared_quality_recall_at_k"] = mrr_after_metrics.get("recall_at_k", 0.0)
+        metrics["shared_quality_ndcg_at_k"] = mrr_after_metrics.get("ndcg_at_k", 0.0)
         metrics["shared_quality_mean_rank_before"] = quality_summary["mean_rank_before"]
         metrics["shared_quality_mean_rank_after"] = quality_summary["mean_rank_after"]
         metrics["shared_quality_mean_rank_delta"] = quality_summary["mean_rank_delta"]
@@ -1030,7 +1040,7 @@ def client_fn(cid: str):
         metrics["shared_quality_degradation_rate"] = quality_summary["degradation_rate"]
         metrics["shared_quality_improvement_rate"] = quality_summary["improvement_rate"]
         metrics["train_loss_source"] = "contrastive_mnr_loss"
-        metrics["loss_source"] = "shared_rank_displacement"
+        metrics["loss_source"] = "delta_mrr"
         metrics["loss_stage"] = "post_local_training_shared_comparison"
         metrics["noise_mode"] = CURRENT_NOISE_MODE
         metrics["logical_cid"] = cid
@@ -1103,6 +1113,7 @@ def main(
     local_epochs: int = 1,
     client_split_mode: str = CLIENT_SPLIT_MODE,
     noisy_client_fraction: float = NOISY_CLIENT_DATA_FRACTION,
+    beta: float = QUALITY_BETA,
 ):
     global CLIENT_TRAIN_DATA, CLIENT_QUALITY_HOLDOUTS, SHARED_QUALITY_PAIRS
     global KNOWLEDGE_STORE, SERVER_VAL_PAIRS, FINAL_TEST_PAIRS
@@ -1162,7 +1173,7 @@ def main(
     print(
         f"Config | clients={NUM_CLIENTS} | split={CURRENT_CLIENT_SPLIT_MODE} | "
         f"noisy_fraction={CURRENT_NOISY_CLIENT_DATA_FRACTION:.2f} | "
-        f"quality_beta={QUALITY_BETA:.1f}"
+        f"quality_beta={beta:.1f}"
     )
     print(f"Retriever | model={CURRENT_RETRIEVER_MODEL}")
     if CURRENT_BENCHMARK_MODE == "mechanism":
@@ -1271,7 +1282,7 @@ def main(
 
     strategy = QualityAwareFedAvg(
         alpha=alpha,
-        quality_beta=QUALITY_BETA,
+        quality_beta=beta,
         focus_client_id=focus_client_id,
         fraction_fit=1.0,
         fraction_evaluate=0.0,
@@ -1466,6 +1477,7 @@ def main(
         csv_path=csv_path,
         log_path=log_file,
         acceptance_path=acceptance_path,
+        beta=beta,
     )
 
     print(f"\n{'=' * 70}")
@@ -1536,6 +1548,12 @@ if __name__ == "__main__":
         help="Number of local epochs per client per round",
     )
     parser.add_argument(
+        "--beta",
+        type=float,
+        default=QUALITY_BETA,
+        help="Temperature parameter for quality score softmax",
+    )
+    parser.add_argument(
         "--client-split-mode",
         type=str,
         default=CLIENT_SPLIT_MODE,
@@ -1560,4 +1578,5 @@ if __name__ == "__main__":
         local_epochs=args.local_epochs,
         client_split_mode=args.client_split_mode,
         noisy_client_fraction=args.noisy_client_fraction,
+        beta=args.beta,
     )
