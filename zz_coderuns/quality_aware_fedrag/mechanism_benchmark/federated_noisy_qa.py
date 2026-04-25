@@ -14,14 +14,10 @@ from typing import Tuple
 from datasets import Dataset
 from datasets.utils import logging as datasets_logging
 from sentence_transformers import SentenceTransformerTrainingArguments
-from transformers import GenerationConfig
 from transformers.utils import logging as transformers_logging
 from accelerate.state import AcceleratorState
 
-from fed_rag import RAGSystem, RAGConfig
-from fed_rag.generators import HFPretrainedModelGenerator
-from fed_rag.trainers import HuggingFaceTrainerForLSR
-from fed_rag.trainer_managers import HuggingFaceRAGTrainerManager
+from contrastive_trainer import ContrastiveFlowerClient
 
 import flwr as fl
 from flwr.common import Metrics
@@ -47,7 +43,6 @@ NUM_ROUNDS = 4
 NUM_CLIENTS = 5
 BATCH_SIZE = 8
 LEARNING_RATE = 2e-6
-GENERATOR_MODEL = "distilgpt2"
 DATASET_NAME = "nfcorpus"
 BENCHMARK_MODE = "mechanism"
 MAX_TRAIN = 4000 # Limits the training set to 4000 query-response pairs.
@@ -121,14 +116,6 @@ def get_runtime_device() -> str:
     if _torch.backends.mps.is_available():
         return "mps"
     return "cpu"
-
-
-def get_generator_load_kwargs() -> dict:
-    import torch as _torch
-    device = get_runtime_device()
-    if device == "cuda":
-        return {"torch_dtype": _torch.float16, "device_map": "auto"}
-    return {"torch_dtype": _torch.float32}
 
 
 def get_client_resources() -> dict[str, float]:
@@ -865,6 +852,7 @@ def write_run_manifest(
         "quality_signal": {
             "strategy_metric_key": "loss",
             "client_metric_source": "shared_rank_displacement",
+            "local_training_objective": "MultipleNegativesRankingLoss (InfoNCE / contrastive)",
             "trainer_return_value": "mean(max(rank_after - rank_before, 0)) - 0.5 * mean(max(rank_before - rank_after, 0))",
             "loss_stage": "post_local_training_shared_comparison",
             "objective": "shared correct-document rank displacement",
@@ -968,25 +956,9 @@ def evaluate_single_run_acceptance(round_infos, alpha: float, *, benchmark_mode:
 def client_fn(cid: str):
     AcceleratorState._reset_state()
 
-    logger.info(f"Client {cid}: Creating RAG system...")
+    logger.info(f"Client {cid}: Creating retriever...")
 
     retriever = create_retriever(CURRENT_RETRIEVER_MODEL)
-    generator = HFPretrainedModelGenerator(
-        model_name=GENERATOR_MODEL,
-        generation_config=GenerationConfig(
-            max_new_tokens=30,
-            do_sample=False,
-            pad_token_id=50256,
-        ),
-        load_model_kwargs=get_generator_load_kwargs(),
-    )
-
-    rag_system = RAGSystem(
-        knowledge_store=KNOWLEDGE_STORE,
-        generator=generator,
-        retriever=retriever,
-        rag_config=RAGConfig(top_k=TOP_K),
-    )
 
     data = CLIENT_TRAIN_DATA[cid]
     train_dataset = Dataset.from_dict({
@@ -1011,27 +983,17 @@ def client_fn(cid: str):
         weight_decay=0.01,
     )
 
-    retriever_trainer = HuggingFaceTrainerForLSR(
-        rag_system=rag_system,
-        train_dataset=train_dataset,
-        training_arguments=training_args,
-    )
+    # model must be the SAME object as retriever.query_encoder so that
+    # audited_fit's quality signal evaluates post-training retriever weights.
+    model = retriever.query_encoder if retriever.query_encoder else retriever.encoder
 
-    manager = HuggingFaceRAGTrainerManager(
-        mode="retriever",
-        retriever_trainer=retriever_trainer,
-    )
-
-    model = retriever_trainer.model
-
-    fl_task = manager.get_federated_task()
-    flower_client = fl_task.client(
+    contrastive_client = ContrastiveFlowerClient(
         model=model,
         train_dataset=train_dataset,
-        val_dataset=train_dataset,
+        training_args=training_args,
     )
 
-    original_fit = flower_client.fit
+    original_fit = contrastive_client.fit
 
     def audited_fit(parameters, config):
         set_retriever_weights(retriever, parameters)
@@ -1067,17 +1029,17 @@ def client_fn(cid: str):
         metrics["shared_quality_mean_negative_delta"] = quality_summary["mean_negative_delta"]
         metrics["shared_quality_degradation_rate"] = quality_summary["degradation_rate"]
         metrics["shared_quality_improvement_rate"] = quality_summary["improvement_rate"]
-        metrics["train_loss_source"] = "lsr_training_loss"
+        metrics["train_loss_source"] = "contrastive_mnr_loss"
         metrics["loss_source"] = "shared_rank_displacement"
         metrics["loss_stage"] = "post_local_training_shared_comparison"
         metrics["noise_mode"] = CURRENT_NOISE_MODE
         metrics["logical_cid"] = cid
         return weights, num_examples, metrics
 
-    flower_client.fit = audited_fit
+    contrastive_client.fit = audited_fit
 
     logger.info(f"Client {cid}: Ready ({len(train_dataset)} examples)")
-    return flower_client.to_client()
+    return contrastive_client.to_client()
 
 
 def weighted_average(metrics: list[Tuple[int, Metrics]]) -> Metrics:
