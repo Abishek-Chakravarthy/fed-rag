@@ -56,7 +56,7 @@ NOISE_MODE = "hard_negative" # The type of noise to introduce.
 NOISY_CLIENT_ID = "4" # The client to introduce noise to.
 CLIENT_SPLIT_MODE = "unequal" # Mechanism mode overrides this to equal client sizes.
 NOISY_CLIENT_DATA_FRACTION = 0.4
-QUALITY_BETA = 1.0
+QUALITY_BETA = 2.0
 QUALITY_RANK_TOP_K = max(TOP_K * 3, 30)
 MECHANISM_CLIENT_NOISE_MAP = {
     "0": 0.0,
@@ -852,11 +852,11 @@ def write_run_manifest(
         "csv_schema_version": 5,
         "quality_signal": {
             "strategy_metric_key": "loss",
-            "client_metric_source": "delta_mrr",
+            "client_metric_source": "train_loss",
             "local_training_objective": "MultipleNegativesRankingLoss (InfoNCE / contrastive)",
-            "trainer_return_value": "MRR_before - MRR_after (on 400-pair shared probe set)",
-            "loss_stage": "post_local_training_shared_comparison",
-            "objective": "MRR degradation on shared probe — positive = degraded, negative = improved",
+            "trainer_return_value": "contrastive training loss (higher = noisier data)",
+            "loss_stage": "post_local_training",
+            "objective": "contrastive loss — higher loss indicates lower-quality data (random negatives harder to separate)",
         },
         "model_selection": {
             "criterion": "best_server_val_mrr_then_ndcg",
@@ -916,17 +916,32 @@ def evaluate_single_run_acceptance(round_infos, alpha: float, *, benchmark_mode:
                 record_map = {
                     record["cid"]: record for record in round_info["client_records"]
                 }
-                noisy_weights = [
-                    record_map[cid]["combined_weight"]
-                    for cid in noisy_clients
-                    if cid in record_map
-                ]
+                # Strict ordering: C4 (90%) < C3 (50%) < min(clean)
+                noisy_sorted = sorted(
+                    noisy_clients,
+                    key=lambda c: float(CURRENT_CLIENT_NOISE_MAP.get(c, 0)),
+                    reverse=True,
+                )
                 clean_weights = [
                     record_map[cid]["combined_weight"]
                     for cid in clean_clients
                     if cid in record_map
                 ]
-                if noisy_weights and clean_weights and max(noisy_weights) < min(clean_weights):
+                noisy_weights_sorted = [
+                    record_map[cid]["combined_weight"]
+                    for cid in noisy_sorted
+                    if cid in record_map
+                ]
+                # Check: noisiest < second-noisiest < min(clean)
+                order_ok = True
+                for i in range(len(noisy_weights_sorted) - 1):
+                    if noisy_weights_sorted[i] >= noisy_weights_sorted[i + 1]:
+                        order_ok = False
+                        break
+                if order_ok and noisy_weights_sorted and clean_weights:
+                    if noisy_weights_sorted[-1] >= min(clean_weights):
+                        order_ok = False
+                if order_ok:
                     quality_order_rounds += 1
         report["higher_loss_clients_downweighted"]["passed"] = (
             downweighted_rounds == len(round_infos)
@@ -1020,10 +1035,12 @@ def client_fn(cid: str):
         quality_summary = compute_shared_quality_signal(retriever, baseline_shared_ranks)
         holdout_metrics = compute_client_holdout_metrics(retriever, cid)
         metrics["train_loss"] = train_loss
-        metrics["loss"] = delta_mrr
-        metrics["quality_loss"] = delta_mrr
-        metrics["quality_metric_name"] = "delta_mrr"
-        metrics["quality_metric_value"] = -delta_mrr  # positive = improvement
+        metrics["loss"] = train_loss
+        metrics["quality_loss"] = train_loss
+        metrics["quality_metric_name"] = "train_loss"
+        metrics["quality_metric_value"] = -train_loss  # lower loss = better quality
+        metrics["delta_mrr"] = delta_mrr
+        metrics["delta_mrr_improvement"] = -delta_mrr  # positive = improved
         metrics["probe_size"] = len(CLIENT_QUALITY_HOLDOUTS[cid])
         metrics["probe_mrr"] = holdout_metrics.get("mrr", 0.0)
         metrics["probe_recall_at_k"] = holdout_metrics.get("recall_at_k", 0.0)
