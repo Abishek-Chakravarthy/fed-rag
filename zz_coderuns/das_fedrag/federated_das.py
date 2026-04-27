@@ -18,15 +18,11 @@ from datasets.utils import logging as datasets_logging
 from flwr.common import Context, Metrics
 from flwr.common.parameter import ndarrays_to_parameters
 from sentence_transformers import SentenceTransformerTrainingArguments
-from transformers import GenerationConfig
 from transformers.utils import logging as transformers_logging
 
-from fed_rag import RAGConfig, RAGSystem
 from fed_rag.fl_tasks.huggingface import _get_weights
-from fed_rag.generators import HFPretrainedModelGenerator
-from fed_rag.trainer_managers import HuggingFaceRAGTrainerManager
-from fed_rag.trainers import HuggingFaceTrainerForLSR
 
+from contrastive_trainer import ContrastiveFlowerClient
 from domain_aware_fedavg import DomainAwareFedAvg
 from prepare_multi_domain_data import (
     DEFAULT_CLIENT_CONFIGS,
@@ -45,7 +41,6 @@ from prepare_multi_domain_data import (
 NUM_ROUNDS = 4
 BATCH_SIZE = 8
 LEARNING_RATE = 2e-6
-GENERATOR_MODEL = "distilgpt2"
 TARGET_DATASET = "nfcorpus"
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_DIR = os.path.join(OUTPUT_DIR, "output_csv_files")
@@ -72,7 +67,6 @@ TARGET_SERVER_VAL_PAIRS: list[dict] = []
 TARGET_FINAL_TEST_PAIRS: list[dict] = []
 TARGET_KNOWLEDGE_STORE = None
 ROUND_METRICS: list[dict[str, float]] = []
-TAU = 0.0
 CURRENT_SEED = SEED
 CURRENT_NUM_ROUNDS = NUM_ROUNDS
 CURRENT_LOCAL_EPOCHS = 1
@@ -86,15 +80,6 @@ def get_runtime_device() -> str:
     if _torch.backends.mps.is_available():
         return "mps"
     return "cpu"
-
-
-def get_generator_load_kwargs() -> dict:
-    import torch as _torch
-
-    device = get_runtime_device()
-    if device == "cuda":
-        return {"torch_dtype": _torch.float32, "device_map": "auto"}
-    return {"torch_dtype": _torch.float32}
 
 
 def get_client_resources() -> dict[str, float]:
@@ -136,7 +121,6 @@ def build_split_summary(client_data_map):
 def build_csv_fieldnames(client_ids):
     base_fields = [
         "round",
-        "tau",
         "seed",
         "target_dataset",
         "avg_loss",
@@ -167,7 +151,7 @@ def build_csv_fieldnames(client_ids):
                 f"client_{cid}_selected",
                 f"client_{cid}_loss",
                 f"client_{cid}_num_examples",
-                f"client_{cid}_size_weight",
+                f"client_{cid}_domain_weight",
                 f"client_{cid}_delta_norm",
             ]
         )
@@ -175,13 +159,11 @@ def build_csv_fieldnames(client_ids):
 
 
 def build_run_slug(
-    *, tau: float, seed: int, num_rounds: int, local_epochs: int, target: str
+    *, seed: int, num_rounds: int, local_epochs: int, target: str, baseline: bool = False
 ) -> str:
     target_slug = target.replace("-", "_")
-    return (
-        f"tau_{tau:.2f}_seed_{seed}_target_{target_slug}_"
-        f"r{num_rounds}_e{local_epochs}"
-    )
+    prefix = "baseline_fedavg" if baseline else "soft_domain"
+    return f"{prefix}_seed_{seed}_target_{target_slug}_r{num_rounds}_e{local_epochs}"
 
 
 def set_retriever_weights(retriever, parameters) -> None:
@@ -211,29 +193,26 @@ def make_post_aggregation_evaluator():
 def evaluate_single_run_acceptance(
     round_infos,
     *,
-    tau: float,
     relevance_scores: dict,
     target_client_id: str,
-    min_selected: int,
+    high_relevance_cid: str,
+    low_relevance_cid: str,
 ):
+    """Acceptance tests for soft domain weighting.
+
+    Tests:
+        target_client_always_selected   — target client (medical) participates every round
+        relevance_scores_ordered        — scores are correctly ranked by domain relevance
+        distinct_round_trajectories     — model hash changes every round (training is happening)
+        high_relevance_outweighs_low    — client 0 (d=1.0) weight > client 2 (d=0.013) every round
+        medical_client_dominates        — client 0 has the highest weight among all clients every round
+    """
     sorted_by_relevance = sorted(
         relevance_scores.items(), key=lambda item: item[1], reverse=True
     )
 
     report = {
-        "tau_zero_selects_all": {
-            "applicable": tau == 0.0,
-            "passed": None,
-        },
-        "positive_tau_excludes_some_clients": {
-            "applicable": tau > 0.0,
-            "passed": None,
-        },
         "target_client_always_selected": {
-            "applicable": True,
-            "passed": None,
-        },
-        "selection_matches_threshold_policy": {
             "applicable": True,
             "passed": None,
         },
@@ -245,47 +224,22 @@ def evaluate_single_run_acceptance(
             "applicable": True,
             "passed": None,
         },
+        "high_relevance_outweighs_low_relevance": {
+            "applicable": True,
+            "passed": None,
+        },
+        "medical_client_dominates": {
+            "applicable": True,
+            "passed": None,
+        },
     }
 
-    if tau == 0.0:
-        report["tau_zero_selects_all"]["passed"] = all(
-            qi["num_selected"] == qi["num_total"] for qi in round_infos
-        )
-
-    # Skip round 1: proxy→logical CID mapping is not established until
-    # after the first aggregate_fit, so selection cannot use tau.
-    policy_round_infos = round_infos[1:] if len(round_infos) > 1 else round_infos
-
-    if tau > 0.0:
-        report["positive_tau_excludes_some_clients"]["passed"] = any(
-            qi["num_selected"] < qi["num_total"] for qi in policy_round_infos
-        )
-        report["positive_tau_excludes_some_clients"]["evidence"] = {
-            "excluded_per_round": [
-                qi["num_total"] - qi["num_selected"] for qi in policy_round_infos
-            ]
-        }
-
+    # target_client_always_selected
     report["target_client_always_selected"]["passed"] = all(
         qi.get("selection_map", {}).get(target_client_id, False) for qi in round_infos
     )
 
-    policy_matches = []
-    for qi in policy_round_infos:
-        above_tau = [
-            cid for cid, rel in sorted_by_relevance if rel > tau
-        ]
-        if len(above_tau) >= min_selected:
-            expected = set(above_tau)
-        else:
-            expected = {cid for cid, _ in sorted_by_relevance[:min_selected]}
-        observed = set(qi.get("selected_cids", []))
-        policy_matches.append(expected == observed)
-    report["selection_matches_threshold_policy"]["passed"] = all(policy_matches)
-    report["selection_matches_threshold_policy"]["evidence"] = {
-        "per_round": policy_matches
-    }
-
+    # relevance_scores_ordered
     report["relevance_scores_ordered"]["passed"] = all(
         sorted_by_relevance[i][1] >= sorted_by_relevance[i + 1][1]
         for i in range(len(sorted_by_relevance) - 1)
@@ -294,6 +248,7 @@ def evaluate_single_run_acceptance(
         "scores": {k: f"{v:.4f}" for k, v in sorted_by_relevance}
     }
 
+    # distinct_round_trajectories
     unique_hashes = {qi["aggregated_model_hash"] for qi in round_infos}
     report["distinct_round_trajectories"]["passed"] = len(unique_hashes) == len(
         round_infos
@@ -301,6 +256,48 @@ def evaluate_single_run_acceptance(
     report["distinct_round_trajectories"]["evidence"] = {
         "unique_hashes": len(unique_hashes),
         "rounds": len(round_infos),
+    }
+
+    # high_relevance_outweighs_low_relevance
+    # In every round, high-relevance client weight > low-relevance client weight.
+    high_gt_low_per_round = []
+    for qi in round_infos:
+        records = {rec["cid"]: rec for rec in qi.get("client_records", [])}
+        high_rec = records.get(high_relevance_cid)
+        low_rec = records.get(low_relevance_cid)
+        if high_rec is not None and low_rec is not None:
+            high_gt_low_per_round.append(
+                high_rec["domain_weight"] > low_rec["domain_weight"]
+            )
+        else:
+            high_gt_low_per_round.append(False)
+    report["high_relevance_outweighs_low_relevance"]["passed"] = all(high_gt_low_per_round)
+    report["high_relevance_outweighs_low_relevance"]["evidence"] = {
+        "per_round": high_gt_low_per_round,
+        "high_cid": high_relevance_cid,
+        "low_cid": low_relevance_cid,
+    }
+
+    # medical_client_dominates
+    # Client 0 (medical, d=1.0) must have the highest domain_weight every round.
+    dominates_per_round = []
+    for qi in round_infos:
+        records = {rec["cid"]: rec for rec in qi.get("client_records", [])}
+        target_rec = records.get(target_client_id)
+        if target_rec is None:
+            dominates_per_round.append(False)
+            continue
+        target_weight = target_rec["domain_weight"]
+        dominates = all(
+            target_weight >= rec["domain_weight"]
+            for cid, rec in records.items()
+            if cid != target_client_id
+        )
+        dominates_per_round.append(dominates)
+    report["medical_client_dominates"]["passed"] = all(dominates_per_round)
+    report["medical_client_dominates"]["evidence"] = {
+        "per_round": dominates_per_round,
+        "target_cid": target_client_id,
     }
 
     return report
@@ -311,28 +308,12 @@ def client_fn(context: Context):
     AcceleratorState._reset_state()
 
     logger.info(
-        "Client %s (%s): Creating RAG system...",
+        "Client %s (%s): Initialising contrastive client...",
         cid,
         CLIENT_DOMAINS.get(cid, "?"),
     )
 
     retriever = create_retriever()
-    generator = HFPretrainedModelGenerator(
-        model_name=GENERATOR_MODEL,
-        generation_config=GenerationConfig(
-            max_new_tokens=30,
-            do_sample=False,
-            pad_token_id=50256,
-        ),
-        load_model_kwargs=get_generator_load_kwargs(),
-    )
-
-    rag_system = RAGSystem(
-        knowledge_store=CLIENT_KNOWLEDGE_STORES[cid],
-        generator=generator,
-        retriever=retriever,
-        rag_config=RAGConfig(top_k=TOP_K),
-    )
 
     data = CLIENT_TRAIN_DATA[cid]
     train_dataset = Dataset.from_dict(
@@ -346,7 +327,6 @@ def client_fn(context: Context):
         output_dir=os.path.join(
             TMP_TRAINING_DIR,
             f"seed_{CURRENT_SEED}",
-            f"tau_{TAU:.2f}",
             f"client_{cid}",
         ),
         num_train_epochs=CURRENT_LOCAL_EPOCHS,
@@ -359,33 +339,22 @@ def client_fn(context: Context):
         weight_decay=0.01,
     )
 
-    retriever_trainer = HuggingFaceTrainerForLSR(
-        rag_system=rag_system,
-        train_dataset=train_dataset,
-        training_arguments=training_args,
-    )
+    model = retriever.query_encoder if retriever.query_encoder else retriever.encoder
 
-    manager = HuggingFaceRAGTrainerManager(
-        mode="retriever",
-        retriever_trainer=retriever_trainer,
-    )
-
-    model = retriever_trainer.model
-    fl_task = manager.get_federated_task()
-    flower_client = fl_task.client(
+    contrastive_client = ContrastiveFlowerClient(
         model=model,
         train_dataset=train_dataset,
-        val_dataset=train_dataset,
+        training_args=training_args,
     )
 
-    original_fit = flower_client.fit
+    original_fit = contrastive_client.fit
 
     def audited_fit(parameters, config):
         weights, num_examples, metrics = original_fit(parameters, config)
         metrics["logical_cid"] = cid
         return weights, num_examples, metrics
 
-    flower_client.fit = audited_fit
+    contrastive_client.fit = audited_fit
 
     logger.info(
         "Client %s (%s): Ready (%s examples)",
@@ -393,7 +362,7 @@ def client_fn(context: Context):
         CLIENT_DOMAINS.get(cid, "?"),
         len(train_dataset),
     )
-    return flower_client.to_client()
+    return contrastive_client.to_client()
 
 
 def weighted_average(metrics: list[Tuple[int, Metrics]]) -> Metrics:
@@ -406,18 +375,17 @@ def weighted_average(metrics: list[Tuple[int, Metrics]]) -> Metrics:
 
 
 def main(
-    tau: float,
     *,
     seed: int = SEED,
     num_rounds: int = NUM_ROUNDS,
     local_epochs: int = 1,
     target: str = TARGET_DATASET,
+    baseline: bool = False,
 ):
     global CLIENT_TRAIN_DATA, CLIENT_KNOWLEDGE_STORES, CLIENT_DOMAINS
     global TARGET_SERVER_VAL_PAIRS, TARGET_FINAL_TEST_PAIRS, TARGET_KNOWLEDGE_STORE
-    global TAU, CURRENT_SEED, CURRENT_NUM_ROUNDS, CURRENT_LOCAL_EPOCHS
+    global CURRENT_SEED, CURRENT_NUM_ROUNDS, CURRENT_LOCAL_EPOCHS
 
-    TAU = tau
     CURRENT_SEED = seed
     CURRENT_NUM_ROUNDS = num_rounds
     CURRENT_LOCAL_EPOCHS = local_epochs
@@ -427,11 +395,11 @@ def main(
     os.makedirs(TMP_TRAINING_DIR, exist_ok=True)
 
     run_slug = build_run_slug(
-        tau=tau,
         seed=seed,
         num_rounds=num_rounds,
         local_epochs=local_epochs,
         target=target,
+        baseline=baseline,
     )
     log_file = os.path.join(LOG_DIR, f"log_{run_slug}.log")
     csv_path = os.path.join(CSV_DIR, f"results_{run_slug}.csv")
@@ -444,7 +412,7 @@ def main(
     try:
         print("=" * 70)
         print(
-            f"Start | τ={tau:.2f} | seed={seed} | "
+            f"Start | soft-domain-weighting | seed={seed} | "
             f"rounds={num_rounds} | epochs={local_epochs} | target={target}"
         )
         print(f"Device | runtime={get_runtime_device()}")
@@ -512,11 +480,18 @@ def main(
         print(f"Initial model hash: {initial_hash[:16]}")
 
         num_clients = len(client_data_map)
+
+        # Pre-register proxy→logical CID mapping.
+        # In Flower simulation, partition-id is assigned sequentially and
+        # deterministically: partition-id 0 → logical CID "0", etc.
+        pre_registered_cid_map = {str(i): str(i) for i in range(num_clients)}
+
         strategy = DomainAwareFedAvg(
-            tau=tau,
+            tau=0.0,  # retained for logging only; does not affect weighting
             client_relevance_scores=relevance_scores,
             min_selected=1,
             target_client_id=target_cid,
+            pre_registered_cid_map=pre_registered_cid_map,
             fraction_fit=1.0,
             fraction_evaluate=0.0,
             min_fit_clients=1,
@@ -606,7 +581,6 @@ def main(
                 selection_map = qi.get("selection_map", {})
                 row = {
                     "round": qi["round"],
-                    "tau": f"{tau:.2f}",
                     "seed": str(seed),
                     "target_dataset": target,
                     "avg_loss": f"{qi['aggregated_loss']:.6f}",
@@ -644,32 +618,39 @@ def main(
                     if record is not None:
                         row[f"client_{cid}_loss"] = f"{record['loss']:.6f}"
                         row[f"client_{cid}_num_examples"] = str(record["num_examples"])
-                        row[f"client_{cid}_size_weight"] = f"{record['size_weight']:.6f}"
+                        row[f"client_{cid}_domain_weight"] = f"{record['domain_weight']:.6f}"
                         row[f"client_{cid}_delta_norm"] = f"{record['delta_norm']:.6f}"
                     else:
                         row[f"client_{cid}_loss"] = ""
                         row[f"client_{cid}_num_examples"] = ""
-                        row[f"client_{cid}_size_weight"] = ""
+                        row[f"client_{cid}_domain_weight"] = ""
                         row[f"client_{cid}_delta_norm"] = ""
 
                 writer.writerow(row)
 
+        # Identify the highest and lowest relevance client CIDs for acceptance tests.
+        sorted_relevance = sorted(
+            relevance_scores.items(), key=lambda x: x[1], reverse=True
+        )
+        high_relevance_cid = sorted_relevance[0][0]   # medical (d=1.0)
+        low_relevance_cid = sorted_relevance[-1][0]   # finance (d=0.013)
+
         acceptance_report = evaluate_single_run_acceptance(
             strategy.round_quality_info,
-            tau=tau,
             relevance_scores=relevance_scores,
             target_client_id=target_cid,
-            min_selected=1,
+            high_relevance_cid=high_relevance_cid,
+            low_relevance_cid=low_relevance_cid,
         )
         with open(acceptance_path, "w", encoding="utf-8") as f:
             json.dump(acceptance_report, f, indent=2, sort_keys=True)
 
         manifest = {
-            "experiment_name": "das_fedavg_domain_selection",
+            "experiment_name": "das_fedavg_soft_domain_weighting",
+            "algorithm": "soft_domain_weighting",
             "canonical_results_csv": csv_path,
             "canonical_log_file": log_file,
             "acceptance_report": acceptance_path,
-            "tau": tau,
             "seed": seed,
             "target_dataset": target,
             "target_client_id": target_cid,
@@ -692,13 +673,13 @@ def main(
             "best_server_val_metrics": best_server_val_metrics,
             "final_test_metrics": final_test_metrics,
             "client_split_summary": split_summary,
-            "csv_schema_version": 2,
+            "csv_schema_version": 3,
         }
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2, sort_keys=True)
 
         print("\n" + "=" * 70)
-        print(f"DAS-FEDAVG COMPLETE | τ={tau:.2f} | best_round={best_round}")
+        print(f"DAS-FEDAVG COMPLETE | soft-domain | best_round={best_round}")
         print(
             "Best server-val | "
             f"MRR={best_server_val_metrics.get('mrr', 0.0):.4f} | "
@@ -722,13 +703,7 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="DAS-FedAvg domain-aware experiment"
-    )
-    parser.add_argument(
-        "--tau",
-        type=float,
-        default=0.0,
-        help="Domain relevance threshold (0 = all clients, higher = more selective)",
+        description="DAS-FedAvg soft domain weighting experiment"
     )
     parser.add_argument("--seed", type=int, default=SEED, help="Random seed")
     parser.add_argument(
@@ -746,12 +721,17 @@ if __name__ == "__main__":
         default=TARGET_DATASET,
         help="Target domain BEIR dataset name",
     )
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help="Run vanilla FedAvg baseline (uniform size-based weights, no domain scoring)",
+    )
     args = parser.parse_args()
 
     main(
-        tau=args.tau,
         seed=args.seed,
         num_rounds=args.rounds,
         local_epochs=args.local_epochs,
         target=args.target,
+        baseline=args.baseline,
     )

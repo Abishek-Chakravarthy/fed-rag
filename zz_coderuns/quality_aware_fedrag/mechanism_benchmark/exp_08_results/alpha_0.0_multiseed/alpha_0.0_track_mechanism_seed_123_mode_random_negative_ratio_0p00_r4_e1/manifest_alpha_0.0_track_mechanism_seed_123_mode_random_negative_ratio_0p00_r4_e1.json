@@ -1,0 +1,125 @@
+{
+  "acceptance_report": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/mechanism_benchmark/output_csv_files/acceptance_alpha_0.0_track_mechanism_seed_123_mode_random_negative_ratio_0p00_r4_e1.json",
+  "alpha": 0.0,
+  "batch_size": 8,
+  "benchmark_mode": "mechanism",
+  "best_round": 1,
+  "canonical_log_file": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/mechanism_benchmark/output_log_files/log_alpha_0.0_track_mechanism_seed_123_mode_random_negative_ratio_0p00_r4_e1.log",
+  "canonical_results_csv": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/mechanism_benchmark/output_csv_files/results_alpha_0.0_track_mechanism_seed_123_mode_random_negative_ratio_0p00_r4_e1.csv",
+  "client_noise_map": {
+    "0": 0.0,
+    "1": 0.0,
+    "2": 0.0,
+    "3": 0.5,
+    "4": 0.9
+  },
+  "client_split_mode": "equal",
+  "client_split_summary": {
+    "holdout": {
+      "0": {
+        "num_pairs": 160,
+        "pairs_hash": "1a29aa0c8308ff3d8b6de51a3e87726f"
+      },
+      "1": {
+        "num_pairs": 160,
+        "pairs_hash": "edb1b96f61e8e29e40e8a66228958c57"
+      },
+      "2": {
+        "num_pairs": 160,
+        "pairs_hash": "fce0d2f4f13b14eb2c7661a5aa4733ad"
+      },
+      "3": {
+        "num_pairs": 160,
+        "pairs_hash": "3cc87fd2be3684b8257a0667ea381abb"
+      },
+      "4": {
+        "num_pairs": 160,
+        "pairs_hash": "3884256c72470b897c668cd6adb52947"
+      }
+    },
+    "train": {
+      "0": {
+        "num_pairs": 640,
+        "pairs_hash": "28e7a9c0b1c627c8e8bc8a5957eef9bf"
+      },
+      "1": {
+        "num_pairs": 640,
+        "pairs_hash": "9fba20fc7279a776c96f7e65315dcdc2"
+      },
+      "2": {
+        "num_pairs": 640,
+        "pairs_hash": "9d2f705a946c765a77dfa21c1a0ae0d1"
+      },
+      "3": {
+        "num_pairs": 640,
+        "pairs_hash": "e2aaf94cf07d16c069b69af5ef4c4e11"
+      },
+      "4": {
+        "num_pairs": 640,
+        "pairs_hash": "f443073c545bb42b2f513d1b7be02373"
+      }
+    }
+  },
+  "csv_schema_version": 5,
+  "dataset_name": "nfcorpus",
+  "experiment_name": "qa_fedavg_noisy_client",
+  "final_test_metrics": {
+    "mrr": 0.02654285714285714,
+    "ndcg_at_k": 0.03596896518358361,
+    "recall_at_k": 0.066
+  },
+  "initial_model_hash": "9db17c8aa125359008dd09ea8e4d40b7",
+  "learning_rate": 2e-06,
+  "local_epochs": 1,
+  "max_corpus_docs": 8000,
+  "max_final_test_pairs": 500,
+  "max_server_val_pairs": 400,
+  "max_shared_quality_pairs": 400,
+  "max_train_pairs": 4000,
+  "model_selection": {
+    "criterion": "best_server_val_mrr_then_ndcg",
+    "selected_best_round": 1
+  },
+  "noise_mode": "random_negative",
+  "noise_ratio": 0.0,
+  "noisy_client_data_fraction": 0.0,
+  "noisy_client_id": "4",
+  "num_clients": 5,
+  "num_rounds": 4,
+  "pre_final_test_metrics": {
+    "mrr": 0.026442857142857133,
+    "ndcg_at_k": 0.03588131768190591,
+    "recall_at_k": 0.066
+  },
+  "pre_holdout_metrics": {
+    "mrr": 0.02714037698412698,
+    "ndcg_at_k": 0.03878477267418683,
+    "recall_at_k": 0.0775
+  },
+  "pre_metrics": {
+    "mrr": 0.018322420634920636,
+    "ndcg_at_k": 0.025557293181480808,
+    "recall_at_k": 0.05
+  },
+  "pre_shared_quality_metrics": {
+    "mrr": 0.02746428571428571,
+    "ndcg_at_k": 0.03776972514057989,
+    "recall_at_k": 0.0725
+  },
+  "quality_beta": 2.0,
+  "quality_holdout_ratio": 0.2,
+  "quality_rank_top_k": 30,
+  "quality_signal": {
+    "client_metric_source": "train_loss",
+    "local_training_objective": "MultipleNegativesRankingLoss (InfoNCE / contrastive)",
+    "loss_stage": "post_local_training",
+    "objective": "contrastive loss \u2014 higher loss indicates lower-quality data (random negatives harder to separate)",
+    "strategy_metric_key": "loss",
+    "trainer_return_value": "contrastive training loss (higher = noisier data)"
+  },
+  "retriever_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "seed": 123,
+  "shared_quality_pairs_count": 400,
+  "top_k": 10,
+  "train_split_hash": "5f1d1ad54a339092fc3b3000658226d7"
+}

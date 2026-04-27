@@ -1,0 +1,26 @@
+{
+  "alpha_zero_matches_fedavg": {
+    "applicable": false,
+    "passed": null
+  },
+  "distinct_round_trajectories": {
+    "applicable": true,
+    "evidence": {
+      "rounds": 4,
+      "unique_model_hashes": 4
+    },
+    "passed": true
+  },
+  "higher_loss_clients_downweighted": {
+    "applicable": true,
+    "evidence": {
+      "downweighted_rounds": 4,
+      "total_rounds": 4
+    },
+    "passed": true
+  },
+  "lower_quality_clients_downweighted": {
+    "applicable": false,
+    "passed": null
+  }
+}

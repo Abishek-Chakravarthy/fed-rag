@@ -23,12 +23,15 @@ class DomainAwareFedAvg(FedAvg):
         client_relevance_scores: Optional[dict[str, float]] = None,
         min_selected: int = 1,
         target_client_id: Optional[str] = None,
+        pre_registered_cid_map: Optional[dict[str, str]] = None,
         post_aggregation_evaluator: Optional[
             Callable[[int, list[np.ndarray]], dict[str, float]]
         ] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        # tau is retained for logging/documentation only — it does NOT affect
+        # selection or weighting in the soft-weighting formulation.
         self.tau = tau
         self.client_relevance_scores = client_relevance_scores or {}
         self.min_selected = min_selected
@@ -41,7 +44,13 @@ class DomainAwareFedAvg(FedAvg):
         self.best_post_eval_metrics: dict[str, float] = {}
         self.last_selection_map: dict[str, bool] = {}
         self.last_selected_cids: list[str] = []
-        self.proxy_to_logical_cid: dict[str, str] = {}
+
+        # Pre-register proxy→logical CID mapping so Round 1 applies correct
+        # domain-aware weighting from the start (not a select-all fallback).
+        if pre_registered_cid_map is not None:
+            self.proxy_to_logical_cid: dict[str, str] = dict(pre_registered_cid_map)
+        else:
+            self.proxy_to_logical_cid = {}
 
         if self.initial_parameters is not None:
             self.last_global_ndarrays = parameters_to_ndarrays(
@@ -79,43 +88,34 @@ class DomainAwareFedAvg(FedAvg):
             ) + 1e-12
         return False
 
-    def _select_clients(
+    def _resolve_clients(
         self, available_cids: list[str], server_round: int
     ) -> tuple[list[str], dict[str, bool], dict[str, str]]:
-        scored = []
+        """Resolve proxy CIDs to logical CIDs. All clients participate every round.
+
+        Returns:
+            selected_cids: all available proxy CIDs (soft weighting — no exclusion)
+            selection_map: proxy_cid → True for all (everyone participates)
+            cid_aliases:   proxy_cid → logical_cid display label
+        """
         cid_aliases = {}
-        has_unknown = False
         for cid in available_cids:
             logical_cid = self.proxy_to_logical_cid.get(cid)
-            cid_aliases[cid] = logical_cid or cid
             if logical_cid is None:
-                has_unknown = True
-                relevance = 1.0
-            else:
-                relevance = self.client_relevance_scores.get(logical_cid, 0.0)
-            scored.append((cid, relevance))
-
-        scored.sort(key=lambda item: item[1], reverse=True)
-
-        if has_unknown:
-            # Round 1: proxy→logical mapping not yet established;
-            # select all so every client trains once and reports its logical CID.
-            selected = [cid for cid, _ in scored]
-            if server_round > 1:
                 print(
-                    f"  WARNING: Round {server_round} still has unmapped proxy CIDs; "
-                    "selecting all clients as fallback."
+                    f"  ERROR: Round {server_round} — proxy CID '{cid}' has no "
+                    "pre-registered logical CID mapping. Skipping this client."
                 )
-        else:
-            selected = [cid for cid, rel in scored if rel > self.tau]
+                cid_aliases[cid] = cid
+            else:
+                cid_aliases[cid] = logical_cid
 
-        if len(selected) < self.min_selected:
-            selected = [cid for cid, _ in scored[: self.min_selected]]
-
-        selection_map = {}
-        for cid in available_cids:
-            selection_map[cid] = cid in selected
-
+        # All mapped clients participate; unmapped ones are skipped (logged above).
+        selected = [
+            cid for cid in available_cids
+            if self.proxy_to_logical_cid.get(cid) is not None
+        ]
+        selection_map = {cid: (cid in selected) for cid in available_cids}
         return selected, selection_map, cid_aliases
 
     def configure_fit(
@@ -136,30 +136,31 @@ class DomainAwareFedAvg(FedAvg):
         )
 
         available_cids = [client.cid for client in all_clients]
-        selected_cids, selection_map, cid_aliases = self._select_clients(
+        selected_cids, selection_map, cid_aliases = self._resolve_clients(
             available_cids, server_round
         )
         self.last_selection_map = dict(selection_map)
         self.last_selected_cids = [cid_aliases.get(cid, cid) for cid in selected_cids]
 
         client_by_cid = {client.cid: client for client in all_clients}
+        result = [
+            (client_by_cid[cid], fit_ins)
+            for cid in selected_cids
+            if cid in client_by_cid
+        ]
 
-        result = []
-        for cid in selected_cids:
-            if cid in client_by_cid:
-                result.append((client_by_cid[cid], fit_ins))
-
+        # Log per-client relevance scores for diagnostics.
         selected_info = []
         for cid in sorted(available_cids, key=self._client_sort_key):
             logical_cid = cid_aliases.get(cid, cid)
-            rel = self.client_relevance_scores.get(logical_cid, 1.0 if logical_cid == cid else 0.0)
+            rel = self.client_relevance_scores.get(logical_cid, 0.0)
             sel = "✅" if selection_map.get(cid, False) else "❌"
             selected_info.append(
                 f"    Client {logical_cid} (proxy={cid}): d={rel:.4f} {sel}"
             )
 
         print(
-            f"\n  Round {server_round} | τ={self.tau:.2f} | "
+            f"\n  Round {server_round} | soft-domain-weighting | "
             f"Selected {len(result)}/{len(all_clients)} clients"
         )
         for line in selected_info:
@@ -185,10 +186,22 @@ class DomainAwareFedAvg(FedAvg):
             ndarrays = parameters_to_ndarrays(fit_res.parameters)
             n_examples = fit_res.num_examples
             loss = fit_res.metrics.get("loss", 1.0)
-            logical_cid = str(
+            reported_logical_cid = str(
                 fit_res.metrics.get("logical_cid", client_proxy.cid)
             )
-            self.proxy_to_logical_cid[client_proxy.cid] = logical_cid
+            pre_registered = self.proxy_to_logical_cid.get(client_proxy.cid)
+            if pre_registered is not None and pre_registered != reported_logical_cid:
+                print(
+                    f"  WARNING: Round {server_round} — proxy '{client_proxy.cid}' "
+                    f"pre-registered as logical '{pre_registered}' but reported "
+                    f"'{reported_logical_cid}'. Using pre-registered value."
+                )
+                logical_cid = pre_registered
+            else:
+                # Handles the no-pre-registration fallback gracefully.
+                self.proxy_to_logical_cid[client_proxy.cid] = reported_logical_cid
+                logical_cid = reported_logical_cid
+
             client_data.append({
                 "cid": logical_cid,
                 "ndarrays": ndarrays,
@@ -204,10 +217,30 @@ class DomainAwareFedAvg(FedAvg):
                 return None, {}
             return ndarrays_to_parameters(self.last_global_ndarrays), {"loss": 0.0}
 
-        n_examples = np.array(
-            [item["n_examples"] for item in client_data], dtype=float
-        )
-        size_weights = n_examples / n_examples.sum()
+        # --- Soft domain weighting -------------------------------------------
+        # weight_j = (d_j * n_j) / Σ_k (d_k * n_k)
+        # An irrelevant client (d ≈ 0) naturally receives near-zero weight.
+        n_total = sum(item["n_examples"] for item in client_data)
+        raw_weights = []
+        for item in client_data:
+            d_j = self.client_relevance_scores.get(item["cid"], 0.0)
+            raw_weights.append(d_j * (item["n_examples"] / n_total))
+
+        raw_weight_sum = sum(raw_weights)
+        if raw_weight_sum < 1e-12:
+            # Degenerate case: all relevance scores are zero. Fall back to
+            # uniform size-based weights so aggregation does not produce NaN.
+            print(
+                f"  WARNING: Round {server_round} — all raw domain weights are ~0. "
+                "Falling back to uniform size-based aggregation."
+            )
+            n_examples_arr = np.array(
+                [item["n_examples"] for item in client_data], dtype=float
+            )
+            final_weights = (n_examples_arr / n_examples_arr.sum()).tolist()
+        else:
+            final_weights = [w / raw_weight_sum for w in raw_weights]
+        # ---------------------------------------------------------------------
 
         all_weights = [item["ndarrays"] for item in client_data]
         num_layers = len(all_weights[0])
@@ -229,7 +262,7 @@ class DomainAwareFedAvg(FedAvg):
         for layer_idx in range(num_layers):
             layer_sum = np.zeros_like(all_weights[0][layer_idx])
             for j, client_weights in enumerate(all_weights):
-                layer_sum += size_weights[j] * client_weights[layer_idx]
+                layer_sum += final_weights[j] * client_weights[layer_idx]
             aggregated.append(layer_sum)
 
         parameters_aggregated = ndarrays_to_parameters(aggregated)
@@ -256,13 +289,15 @@ class DomainAwareFedAvg(FedAvg):
 
         client_records = []
         for idx, item in enumerate(client_data):
+            d_j = self.client_relevance_scores.get(item["cid"], 0.0)
             client_records.append({
                 "cid": item["cid"],
                 "loss": float(losses[idx]),
                 "num_examples": int(item["n_examples"]),
-                "size_weight": float(size_weights[idx]),
+                "domain_weight": float(final_weights[idx]),
+                "raw_domain_weight": float(raw_weights[idx]),
                 "delta_norm": float(client_delta_norms[idx]),
-                "relevance": self.client_relevance_scores.get(item["cid"], 0.0),
+                "relevance": d_j,
                 "selected": True,
             })
 
@@ -297,11 +332,16 @@ class DomainAwareFedAvg(FedAvg):
             self.best_global_ndarrays = [arr.copy() for arr in aggregated]
             self.best_round = server_round
 
+        # Log per-client domain weights for diagnostics.
+        weight_summary = " | ".join(
+            f"C{rec['cid']}:d={rec['relevance']:.3f}→w={rec['domain_weight']:.3f}"
+            for rec in client_records
+        )
         summary = (
-            f"  Round {server_round} | τ={self.tau:.2f} | "
+            f"  Round {server_round} | soft-domain | "
             f"avg_loss={info['aggregated_loss']:.6f} | "
             f"global_delta={aggregated_delta_norm:.6f} | "
-            f"selected={len(results)}/{len(self.client_relevance_scores)}"
+            f"clients={len(results)}/{len(self.client_relevance_scores)}"
         )
         if post_eval_metrics:
             summary += (
@@ -311,6 +351,7 @@ class DomainAwareFedAvg(FedAvg):
         if self.best_round is not None:
             summary += f" | best_round={self.best_round}"
         print(summary, flush=True)
+        print(f"  Weights | {weight_summary}", flush=True)
 
         self.last_global_ndarrays = aggregated
 

@@ -52,11 +52,11 @@
       },
       "3": {
         "num_pairs": 640,
-        "pairs_hash": "173fd1a95283259b304ac9b2309d150d"
+        "pairs_hash": "77f32ab3fbc9336aa4be403adfe0b71d"
       },
       "4": {
         "num_pairs": 640,
-        "pairs_hash": "7c636822bcc766f2afbd3477f7b85705"
+        "pairs_hash": "0da8f7219b8a03a86552f73d7bfdee5c"
       }
     }
   },
@@ -120,5 +120,5 @@
   "seed": 42,
   "shared_quality_pairs_count": 400,
   "top_k": 10,
-  "train_split_hash": "9ff33519f1cb46199eb173273d4a8eee"
+  "train_split_hash": "2b82021008355e65339964ef23bdb629"
 }

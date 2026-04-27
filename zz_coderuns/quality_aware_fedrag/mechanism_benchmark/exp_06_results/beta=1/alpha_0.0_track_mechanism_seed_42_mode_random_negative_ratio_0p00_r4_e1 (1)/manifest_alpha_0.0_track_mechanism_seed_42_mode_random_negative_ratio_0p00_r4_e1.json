@@ -1,0 +1,125 @@
+{
+  "acceptance_report": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/mechanism_benchmark/output_csv_files/acceptance_alpha_0.0_track_mechanism_seed_42_mode_random_negative_ratio_0p00_r4_e1.json",
+  "alpha": 0.0,
+  "batch_size": 8,
+  "benchmark_mode": "mechanism",
+  "best_round": 3,
+  "canonical_log_file": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/mechanism_benchmark/output_log_files/log_alpha_0.0_track_mechanism_seed_42_mode_random_negative_ratio_0p00_r4_e1.log",
+  "canonical_results_csv": "/kaggle/working/fed-rag/zz_coderuns/quality_aware_fedrag/mechanism_benchmark/output_csv_files/results_alpha_0.0_track_mechanism_seed_42_mode_random_negative_ratio_0p00_r4_e1.csv",
+  "client_noise_map": {
+    "0": 0.0,
+    "1": 0.0,
+    "2": 0.0,
+    "3": 0.5,
+    "4": 0.9
+  },
+  "client_split_mode": "equal",
+  "client_split_summary": {
+    "holdout": {
+      "0": {
+        "num_pairs": 160,
+        "pairs_hash": "7da2d2883af661d83068c30fac0127c2"
+      },
+      "1": {
+        "num_pairs": 160,
+        "pairs_hash": "6ef794382f2eceb59ba021ffa1903aa3"
+      },
+      "2": {
+        "num_pairs": 160,
+        "pairs_hash": "75d445d18a65cdb3673638417bc17534"
+      },
+      "3": {
+        "num_pairs": 160,
+        "pairs_hash": "3b5571a4e61e4c035a13d21d288cf954"
+      },
+      "4": {
+        "num_pairs": 160,
+        "pairs_hash": "1cbc7bb636ffc02533cb184943ba7741"
+      }
+    },
+    "train": {
+      "0": {
+        "num_pairs": 640,
+        "pairs_hash": "b3697b5d8cf0fcef2fa8b66f0105d2d8"
+      },
+      "1": {
+        "num_pairs": 640,
+        "pairs_hash": "757d3b89ccf6703cb7fa5059e79b6243"
+      },
+      "2": {
+        "num_pairs": 640,
+        "pairs_hash": "99b0c9bb60154ebc999eabf15c38b575"
+      },
+      "3": {
+        "num_pairs": 640,
+        "pairs_hash": "77f32ab3fbc9336aa4be403adfe0b71d"
+      },
+      "4": {
+        "num_pairs": 640,
+        "pairs_hash": "0da8f7219b8a03a86552f73d7bfdee5c"
+      }
+    }
+  },
+  "csv_schema_version": 5,
+  "dataset_name": "nfcorpus",
+  "experiment_name": "qa_fedavg_noisy_client",
+  "final_test_metrics": {
+    "mrr": 0.020848412698412696,
+    "ndcg_at_k": 0.032672304868116564,
+    "recall_at_k": 0.072
+  },
+  "initial_model_hash": "9db17c8aa125359008dd09ea8e4d40b7",
+  "learning_rate": 2e-06,
+  "local_epochs": 1,
+  "max_corpus_docs": 8000,
+  "max_final_test_pairs": 500,
+  "max_server_val_pairs": 400,
+  "max_shared_quality_pairs": 400,
+  "max_train_pairs": 4000,
+  "model_selection": {
+    "criterion": "best_server_val_mrr_then_ndcg",
+    "selected_best_round": 3
+  },
+  "noise_mode": "random_negative",
+  "noise_ratio": 0.0,
+  "noisy_client_data_fraction": 0.0,
+  "noisy_client_id": "4",
+  "num_clients": 5,
+  "num_rounds": 4,
+  "pre_final_test_metrics": {
+    "mrr": 0.019738888888888886,
+    "ndcg_at_k": 0.03182560577232025,
+    "recall_at_k": 0.072
+  },
+  "pre_holdout_metrics": {
+    "mrr": 0.015715277777777772,
+    "ndcg_at_k": 0.022527105160964785,
+    "recall_at_k": 0.045
+  },
+  "pre_metrics": {
+    "mrr": 0.02425297619047619,
+    "ndcg_at_k": 0.033658306678763766,
+    "recall_at_k": 0.065
+  },
+  "pre_shared_quality_metrics": {
+    "mrr": 0.04140873015873016,
+    "ndcg_at_k": 0.05278420869086222,
+    "recall_at_k": 0.09
+  },
+  "quality_beta": 1.0,
+  "quality_holdout_ratio": 0.2,
+  "quality_rank_top_k": 30,
+  "quality_signal": {
+    "client_metric_source": "delta_mrr",
+    "local_training_objective": "MultipleNegativesRankingLoss (InfoNCE / contrastive)",
+    "loss_stage": "post_local_training_shared_comparison",
+    "objective": "MRR degradation on shared probe \u2014 positive = degraded, negative = improved",
+    "strategy_metric_key": "loss",
+    "trainer_return_value": "MRR_before - MRR_after (on 400-pair shared probe set)"
+  },
+  "retriever_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "seed": 42,
+  "shared_quality_pairs_count": 400,
+  "top_k": 10,
+  "train_split_hash": "2b82021008355e65339964ef23bdb629"
+}
