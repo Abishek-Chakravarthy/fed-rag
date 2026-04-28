@@ -38,7 +38,7 @@ from prepare_multi_domain_data import (
 )
 
 
-NUM_ROUNDS = 4
+NUM_ROUNDS = 8
 BATCH_SIZE = 8
 LEARNING_RATE = 2e-6
 TARGET_DATASET = "nfcorpus"

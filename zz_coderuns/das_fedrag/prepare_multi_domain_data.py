@@ -111,8 +111,6 @@ def build_positive_pairs(
                 })
                 seen.add((qid, did))
 
-    rng = random.Random(seed)
-    rng.shuffle(pairs)
     print(f"  Built {len(pairs)} positive pairs before splitting")
     return pairs
 
@@ -157,38 +155,34 @@ def split_pairs_with_caps(
     max_train=MAX_TRAIN_PAIRS,
     max_server_val=MAX_SERVER_VAL_PAIRS,
     max_final_test=MAX_FINAL_TEST_PAIRS,
+    seed=SEED,
 ):
     total = len(pairs)
     if total == 0:
         return [], [], []
 
-    train_target = min(max_train, max(1, int(total * 0.7)))
-    remaining = max(0, total - train_target)
+    # Eval splits are carved from the END of the deterministic pair list —
+    # same queries land in val/test regardless of seed. Only train is shuffled.
+    server_val_target = min(max_server_val, max(1, int(total * 0.15)))
+    final_test_target = min(max_final_test, max(1, int(total * 0.15)))
+    eval_total = server_val_target + final_test_target
 
-    server_val_target = min(max_server_val, max(1 if remaining > 1 else 0, int(total * 0.15)))
-    server_val_target = min(server_val_target, remaining)
-    remaining -= server_val_target
+    if eval_total >= total:
+        # Edge case: dataset too small to have a train split
+        server_val_pairs = pairs[:server_val_target]
+        final_test_pairs = pairs[server_val_target:server_val_target + final_test_target]
+        return [], server_val_pairs, final_test_pairs
 
-    final_test_target = min(
-        max_final_test,
-        max(1 if remaining > 0 else 0, int(total * 0.15)),
-    )
-    final_test_target = min(final_test_target, remaining)
-    remaining -= final_test_target
+    # Fixed eval pool — always the last eval_total pairs, deterministic
+    server_val_pairs = pairs[-(eval_total):-final_test_target]
+    final_test_pairs = pairs[-final_test_target:]
 
-    train_count = min(train_target, total - server_val_target - final_test_target)
-    if train_count <= 0:
-        train_count = max(1, total - max(1 if total > 1 else 0, final_test_target))
-        remaining_after_train = total - train_count
-        server_val_target = min(server_val_target, remaining_after_train)
-        final_test_target = min(final_test_target, remaining_after_train - server_val_target)
-
-    train_pairs = pairs[:train_count]
-    server_val_pairs = pairs[train_count:train_count + server_val_target]
-    final_test_pairs = pairs[
-        train_count + server_val_target:
-        train_count + server_val_target + final_test_target
-    ]
+    # Train pool — everything before the eval pool, shuffled with seed
+    train_candidates = pairs[:total - eval_total]
+    train_count = min(max_train, len(train_candidates))
+    rng = random.Random(seed)
+    rng.shuffle(train_candidates)
+    train_pairs = train_candidates[:train_count]
 
     return train_pairs, server_val_pairs, final_test_pairs
 
@@ -299,6 +293,7 @@ def load_client_data(
         max_train=max_train,
         max_server_val=max_server_val,
         max_final_test=max_final_test,
+        seed=seed,
     )
 
     domain_centroid = load_cached_centroid(dataset_name, max_docs)
