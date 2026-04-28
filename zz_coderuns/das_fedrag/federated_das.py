@@ -486,9 +486,13 @@ def main(
         # deterministically: partition-id 0 → logical CID "0", etc.
         pre_registered_cid_map = {str(i): str(i) for i in range(num_clients)}
 
+        effective_relevance_scores = (
+            {cid: 1.0 for cid in relevance_scores} if baseline else relevance_scores
+        )
+
         strategy = DomainAwareFedAvg(
             tau=0.0,  # retained for logging only; does not affect weighting
-            client_relevance_scores=relevance_scores,
+            client_relevance_scores=effective_relevance_scores,
             min_selected=1,
             target_client_id=target_cid,
             pre_registered_cid_map=pre_registered_cid_map,
