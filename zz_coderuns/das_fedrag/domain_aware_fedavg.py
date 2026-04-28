@@ -103,19 +103,16 @@ class DomainAwareFedAvg(FedAvg):
             logical_cid = self.proxy_to_logical_cid.get(cid)
             if logical_cid is None:
                 print(
-                    f"  ERROR: Round {server_round} — proxy CID '{cid}' has no "
-                    "pre-registered logical CID mapping. Skipping this client."
+                    f"  WARNING: Round {server_round} — proxy CID '{cid}' has no "
+                    "pre-registered logical CID mapping. Selecting anyway to discover."
                 )
                 cid_aliases[cid] = cid
             else:
                 cid_aliases[cid] = logical_cid
 
-        # All mapped clients participate; unmapped ones are skipped (logged above).
-        selected = [
-            cid for cid in available_cids
-            if self.proxy_to_logical_cid.get(cid) is not None
-        ]
-        selection_map = {cid: (cid in selected) for cid in available_cids}
+        # All available clients participate to report their logical CIDs
+        selected = available_cids
+        selection_map = {cid: True for cid in available_cids}
         return selected, selection_map, cid_aliases
 
     def configure_fit(
