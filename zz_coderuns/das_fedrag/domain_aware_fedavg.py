@@ -19,7 +19,7 @@ class DomainAwareFedAvg(FedAvg):
 
     def __init__(
         self,
-        tau: float = 0.0,
+        tau: float = 1.0,
         client_relevance_scores: Optional[dict[str, float]] = None,
         min_selected: int = 1,
         target_client_id: Optional[str] = None,
@@ -30,8 +30,6 @@ class DomainAwareFedAvg(FedAvg):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        # tau is retained for logging/documentation only — it does NOT affect
-        # selection or weighting in the soft-weighting formulation.
         self.tau = tau
         self.client_relevance_scores = client_relevance_scores or {}
         self.min_selected = min_selected
@@ -215,17 +213,28 @@ class DomainAwareFedAvg(FedAvg):
             return ndarrays_to_parameters(self.last_global_ndarrays), {"loss": 0.0}
 
         # --- Soft domain weighting -------------------------------------------
-        # weight_j = (d_j * n_j) / Σ_k (d_k * n_k)
-        # An irrelevant client (d ≈ 0) naturally receives near-zero weight.
+        import math
+
         n_total = sum(item["n_examples"] for item in client_data)
-        raw_weights = []
+        
+        log_relevances = []
         for item in client_data:
             d_j = self.client_relevance_scores.get(item["cid"], 0.0)
-            raw_weights.append(d_j * (item["n_examples"] / n_total))
+            log_relevances.append(math.log(max(d_j, 1e-8)))
+            
+        max_log = max(log_relevances)
+        tau = self.tau if self.tau > 0 else 1.0  # safe fallback
+        exp_scores = [math.exp((lr - max_log) / tau) for lr in log_relevances]
+        softmax_sum = sum(exp_scores)
+        softmax_weights = [e / softmax_sum for e in exp_scores]
+
+        raw_weights = []
+        for i, item in enumerate(client_data):
+            raw_weights.append(softmax_weights[i] * (item["n_examples"] / n_total))
 
         raw_weight_sum = sum(raw_weights)
         if raw_weight_sum < 1e-12:
-            # Degenerate case: all relevance scores are zero. Fall back to
+            # Degenerate case: all weights are ~0. Fall back to
             # uniform size-based weights so aggregation does not produce NaN.
             print(
                 f"  WARNING: Round {server_round} — all raw domain weights are ~0. "

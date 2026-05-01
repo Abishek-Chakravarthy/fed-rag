@@ -40,7 +40,7 @@ from prepare_multi_domain_data import (
 
 NUM_ROUNDS = 8
 BATCH_SIZE = 8
-LEARNING_RATE = 2e-6
+LEARNING_RATE = 5e-7
 TARGET_DATASET = "nfcorpus"
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_DIR = os.path.join(OUTPUT_DIR, "output_csv_files")
