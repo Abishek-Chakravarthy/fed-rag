@@ -491,7 +491,6 @@ def main(
         )
 
         strategy = DomainAwareFedAvg(
-            tau=0.0,  # retained for logging only; does not affect weighting
             client_relevance_scores=effective_relevance_scores,
             min_selected=1,
             target_client_id=target_cid,

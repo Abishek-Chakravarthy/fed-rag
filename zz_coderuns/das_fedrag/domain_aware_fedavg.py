@@ -19,7 +19,6 @@ class DomainAwareFedAvg(FedAvg):
 
     def __init__(
         self,
-        tau: float = 1.0,
         client_relevance_scores: Optional[dict[str, float]] = None,
         min_selected: int = 1,
         target_client_id: Optional[str] = None,
@@ -30,7 +29,6 @@ class DomainAwareFedAvg(FedAvg):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.tau = tau
         self.client_relevance_scores = client_relevance_scores or {}
         self.min_selected = min_selected
         self.target_client_id = target_client_id
@@ -212,40 +210,40 @@ class DomainAwareFedAvg(FedAvg):
                 return None, {}
             return ndarrays_to_parameters(self.last_global_ndarrays), {"loss": 0.0}
 
-        # --- Soft domain weighting -------------------------------------------
-        import math
-
-        n_total = sum(item["n_examples"] for item in client_data)
-        
-        log_relevances = []
+        # --- Domain-aware weighting -------------------------------------------
+        # Pure relevance: w_j = d_j / Σ d_k
+        # Data volume is implicitly captured by gradient magnitude from local
+        # training (more data → more SGD steps → larger delta_norm).
+        relevances = []
         for item in client_data:
             d_j = self.client_relevance_scores.get(item["cid"], 0.0)
-            log_relevances.append(math.log(max(d_j, 1e-8)))
-            
-        max_log = max(log_relevances)
-        tau = self.tau if self.tau > 0 else 1.0  # safe fallback
-        exp_scores = [math.exp((lr - max_log) / tau) for lr in log_relevances]
-        softmax_sum = sum(exp_scores)
-        softmax_weights = [e / softmax_sum for e in exp_scores]
+            relevances.append(d_j)
 
-        raw_weights = []
-        for i, item in enumerate(client_data):
-            raw_weights.append(softmax_weights[i] * (item["n_examples"] / n_total))
-
-        raw_weight_sum = sum(raw_weights)
-        if raw_weight_sum < 1e-12:
-            # Degenerate case: all weights are ~0. Fall back to
-            # uniform size-based weights so aggregation does not produce NaN.
+        relevance_sum = sum(relevances)
+        if relevance_sum < 1e-12:
+            # Fallback: all relevance scores are ~0 (or baseline mode with
+            # uniform scores). Use standard FedAvg n_j/N weighting.
             print(
-                f"  WARNING: Round {server_round} — all raw domain weights are ~0. "
-                "Falling back to uniform size-based aggregation."
+                f"  WARNING: Round {server_round} — all relevance scores are ~0. "
+                "Falling back to size-based aggregation."
             )
             n_examples_arr = np.array(
                 [item["n_examples"] for item in client_data], dtype=float
             )
             final_weights = (n_examples_arr / n_examples_arr.sum()).tolist()
+        elif all(abs(r - relevances[0]) < 1e-8 for r in relevances):
+            # All relevance scores are identical (baseline mode: all d_j = 1.0).
+            # Fall back to standard FedAvg n_j/N weighting to preserve
+            # baseline behavior.
+            n_examples_arr = np.array(
+                [item["n_examples"] for item in client_data], dtype=float
+            )
+            final_weights = (n_examples_arr / n_examples_arr.sum()).tolist()
         else:
-            final_weights = [w / raw_weight_sum for w in raw_weights]
+            # DAS-FedAvg: pure relevance-proportional weighting.
+            final_weights = [r / relevance_sum for r in relevances]
+
+        raw_weights = list(final_weights)  # for logging compatibility
         # ---------------------------------------------------------------------
 
         all_weights = [item["ndarrays"] for item in client_data]
@@ -320,7 +318,7 @@ class DomainAwareFedAvg(FedAvg):
 
         info = {
             "round": server_round,
-            "tau": self.tau,
+            "algorithm": "pure_relevance",
             "aggregated_loss": float(metrics_aggregated.get("loss", 0.0)),
             "aggregated_delta_norm": aggregated_delta_norm,
             "aggregated_model_hash": self._hash_ndarrays(aggregated),
