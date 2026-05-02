@@ -22,15 +22,27 @@ def load_beir_dataset(dataset_name: str = "nfcorpus"):
     """
     Loads a BEIR dataset from Hugging Face including the corpus, queries, and relevance judgments.
 
+    Qrels strategy — merge all available splits (train / validation / test):
+        Datasets like FiQA have most of their judgments in the 'train' split
+        (14 166 rows) while 'test' has only 1 706.  Loading 'test' alone and
+        capping the knowledge store at MAX_CORPUS_DOCS means almost every
+        ground-truth document falls outside the store, leaving zero eval pairs
+        after filter_eval_pairs_by_store().  Merging all splits gives the full
+        pool of judgments so the train/val/test pair split in setup_dataset()
+        has enough coverage regardless of which dataset is used.
+
     Args:
         dataset_name (str): The name of the BEIR dataset to load (e.g., "nfcorpus").
 
     Returns:
-        tuple: (doc_lookup, query_lookup, qrels_ds)
+        tuple: (doc_lookup, query_lookup, qrels_rows)
             - doc_lookup (dict): Mapping from doc_id to document text.
             - query_lookup (dict): Mapping from query_id to query text.
-            - qrels_ds (Dataset): The relevance judgments dataset.
+            - qrels_rows (list[dict]): All relevance judgment rows across every
+              available split, each with keys 'query-id', 'corpus-id', 'score'.
     """
+    from datasets import concatenate_datasets
+
     print(f"📥 Loading BEIR/{dataset_name}...")
 
     # corpus is the Knowledge Base or the collection of documents. It contains all the "answers" or evidence.
@@ -45,19 +57,27 @@ def load_beir_dataset(dataset_name: str = "nfcorpus"):
     except Exception:
         queries_ds = None
 
-    # qrels is Short for "Query Relevance judgments." This is the "Ground Truth" or the Answer Key. It maps which Documents (corpus-id) are actually relevant to which Queries (query-id).
-    # A typical row in qrels looks like: {"query-id": "Q1", "corpus-id": "D5", "score": 1}. This tells the system that Document D5 is a correct answer for Query Q1.
-    try:
-        qrels_ds = load_dataset(f"BeIR/{dataset_name}-qrels", split="test")
-    except Exception:
-        """eg: [
-            {"query-id": "101", "corpus-id": "doc_882", "score": 1},
-            {"query-id": "101", "corpus-id": "doc_450", "score": 1},
-            {"query-id": "102", "corpus-id": "doc_12",  "score": 1},
-            {"query-id": "103", "corpus-id": "doc_99",  "score": 0},
-            ...]
-        """
-        qrels_ds = load_dataset(f"BeIR/{dataset_name}-qrels", split="validation")
+    # qrels — merge ALL available splits so we get the full set of judgments.
+    # Some datasets (e.g. FiQA) put the majority of qrels in 'train', not 'test'.
+    qrels_splits_to_try = ["train", "validation", "test"]
+    collected_qrels = []
+    for split_name in qrels_splits_to_try:
+        try:
+            split_ds = load_dataset(f"BeIR/{dataset_name}-qrels", split=split_name)
+            collected_qrels.append(split_ds)
+        except Exception:
+            pass  # split does not exist for this dataset — skip silently
+
+    if not collected_qrels:
+        raise RuntimeError(
+            f"Could not load any qrels split for BeIR/{dataset_name}-qrels. "
+            f"Tried: {qrels_splits_to_try}"
+        )
+
+    if len(collected_qrels) == 1:
+        qrels_ds = collected_qrels[0]
+    else:
+        qrels_ds = concatenate_datasets(collected_qrels)
 
     """
     eg:
@@ -172,14 +192,23 @@ def build_train_eval_pairs(
     return train_pairs, heldout_pairs
 
 
-def build_knowledge_store(doc_lookup, retriever, max_docs=MAX_CORPUS_DOCS):
+def build_knowledge_store(doc_lookup, retriever, max_docs=MAX_CORPUS_DOCS, priority_doc_ids=None):
     """
     Initializes an in-memory knowledge store and populates it with document embeddings.
+
+    When the corpus is larger than max_docs (e.g. FiQA has 57K docs but we cap
+    at 8K), documents whose IDs appear in qrels are loaded first so that
+    filter_eval_pairs_by_store() retains a meaningful eval set.  Any remaining
+    capacity is filled with the rest of the corpus in original order.
 
     Args:
         doc_lookup (dict): Mapping from doc_id to document text.
         retriever (BaseRetriever): The retriever model used to generate embeddings.
         max_docs (int): Maximum number of documents to load and embed.
+        priority_doc_ids (set | None): Doc IDs that must be in the store
+            (e.g. all IDs referenced by qrels).  Loaded first before any
+            other corpus documents.  Pass None to use original order (legacy
+            behaviour, safe for small corpora like NFCorpus).
 
     Returns:
         InMemoryKnowledgeStore: The populated knowledge store.
@@ -189,7 +218,25 @@ def build_knowledge_store(doc_lookup, retriever, max_docs=MAX_CORPUS_DOCS):
     store = InMemoryKnowledgeStore()
     nodes = []
 
-    docs = list(doc_lookup.items())[:max_docs]
+    if priority_doc_ids and len(doc_lookup) > max_docs:
+        # Two-pass selection: priority docs first, then fill remaining slots.
+        priority_docs = [
+            (doc_id, text) for doc_id, text in doc_lookup.items()
+            if doc_id in priority_doc_ids
+        ]
+        other_docs = [
+            (doc_id, text) for doc_id, text in doc_lookup.items()
+            if doc_id not in priority_doc_ids
+        ]
+        docs = (priority_docs + other_docs)[:max_docs]
+        n_priority_loaded = min(len(priority_docs), max_docs)
+        print(
+            f"  Priority docs in store: {n_priority_loaded}/{len(priority_doc_ids)} "
+            f"(qrel-referenced) + {max(0, max_docs - n_priority_loaded)} others"
+        )
+    else:
+        docs = list(doc_lookup.items())[:max_docs]
+
     for idx, (doc_id, text) in enumerate(docs):
         # truncate to fit the context window of the retriever model
         text_truncated = text[:512]
@@ -344,8 +391,16 @@ def setup_dataset(
         total_holdout,
         seed=seed,
     )
+
+    # Collect all doc IDs referenced by qrels so the knowledge store prioritises
+    # them when the corpus is larger than max_docs (e.g. FiQA: 57K docs, 8K cap).
+    # This prevents filter_eval_pairs_by_store() from wiping out the eval set.
+    qrel_doc_ids = {str(row["corpus-id"]) for row in qrels_ds if row["score"] > 0}
+
     retriever = create_retriever(retriever_model)
-    knowledge_store = build_knowledge_store(doc_lookup, retriever, max_docs)
+    knowledge_store = build_knowledge_store(
+        doc_lookup, retriever, max_docs, priority_doc_ids=qrel_doc_ids
+    )
 
     heldout_pairs = filter_eval_pairs_by_store(heldout_pairs, knowledge_store)
     shared_quality_pairs = heldout_pairs[:max_shared_quality]
