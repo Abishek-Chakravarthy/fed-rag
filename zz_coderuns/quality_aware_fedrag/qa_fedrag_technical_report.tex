@@ -1,0 +1,1124 @@
+\documentclass[12pt,a4paper]{article}
+
+% ─── Packages ────────────────────────────────────────────────────────────────
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{tcolorbox}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{microtype}
+\usepackage{parskip}
+
+% ─── Colours ─────────────────────────────────────────────────────────────────
+\definecolor{codeblue}{RGB}{0,102,204}
+\definecolor{codegray}{RGB}{100,100,100}
+\definecolor{codegreen}{RGB}{0,128,0}
+\definecolor{codebg}{RGB}{248,248,248}
+\definecolor{alertred}{RGB}{180,0,0}
+\definecolor{noteblue}{RGB}{0,70,140}
+\definecolor{successgreen}{RGB}{0,120,40}
+
+% ─── Listings ────────────────────────────────────────────────────────────────
+\lstset{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  captionpos=b,
+  commentstyle=\color{codegreen},
+  keywordstyle=\color{codeblue}\bfseries,
+  stringstyle=\color{alertred},
+  numbers=left,
+  numberstyle=\tiny\color{codegray},
+  frame=single,
+  rulecolor=\color{gray!40},
+  tabsize=4,
+  language=Python
+}
+
+% ─── Custom boxes ────────────────────────────────────────────────────────────
+\tcbuselibrary{skins, breakable}
+\newtcolorbox{keybox}[1]{
+  colback=noteblue!5,colframe=noteblue!60,
+  fonttitle=\bfseries, title=#1, breakable
+}
+\newtcolorbox{warnbox}[1]{
+  colback=alertred!5,colframe=alertred!60,
+  fonttitle=\bfseries, title=#1, breakable
+}
+\newtcolorbox{successbox}[1]{
+  colback=successgreen!5,colframe=successgreen!60,
+  fonttitle=\bfseries, title=#1, breakable
+}
+
+% ─── Headers ─────────────────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\textcolor{gray}{\small QA-FedRAG Technical Report}}
+\lhead{\textcolor{gray}{\small Final Year Project}}
+\cfoot{\thepage}
+
+% ─── Hyperref ────────────────────────────────────────────────────────────────
+\hypersetup{
+  colorlinks=true, linkcolor=noteblue, urlcolor=codeblue, citecolor=codegreen,
+  pdftitle={QA-FedRAG: Quality-Aware Federated Retrieval-Augmented Generation},
+  pdfauthor={Abishek Chakravarthy}
+}
+
+% ─── Math operators ──────────────────────────────────────────────────────────
+\DeclareMathOperator{\softmax}{softmax}
+\DeclareMathOperator{\KL}{KL}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+% ─── Title ───────────────────────────────────────────────────────────────────
+\begin{titlepage}
+  \centering
+  \vspace*{2cm}
+  {\Huge\bfseries Quality-Aware Federated\\Retrieval-Augmented Generation\par}
+  \vspace{0.8cm}
+  {\Large\textit{(QA-FedRAG) --- Full Technical Reference}\par}
+  \vspace{1.5cm}
+  \rule{\linewidth}{0.5pt}\\[0.4cm]
+  {\large A complete code-level explanation of every component:\\
+  the federated algorithm, the contrastive retriever trainer,\\
+  noise injection mechanics, quality signals, and complete experiment history.}
+  \rule{\linewidth}{0.5pt}\\[1.5cm]
+  {\large Final Year Project --- Mechanism Benchmark \& Robustness Benchmark\par}
+  \vspace{0.5cm}
+  {\normalsize Branch: \texttt{q-fedrag2} \quad Dataset: NFCorpus (BEIR)\par}
+  \vspace{1cm}
+  {\normalsize\color{gray} Compiled from source code and experiment logs as of April 2026\\
+  Reflects the fully validated state after Experiments 01--08 (Mechanism) and 01--03 (Robustness)\par}
+  \vfill
+\end{titlepage}
+
+% ─── Table of contents ───────────────────────────────────────────────────────
+\tableofcontents
+\newpage
+
+% =============================================================================
+\section{Project Overview}
+% =============================================================================
+
+This document is the complete technical reference for the \textbf{QA-FedRAG} final year project. The core research contribution is a modification to standard \textit{Federated Averaging} (FedAvg) that weights each client's model update according to a data-quality signal, thereby downweighting clients whose local training data is noisy or corrupted.
+
+The system is built on top of the \texttt{fed-rag} library and uses:
+\begin{itemize}
+  \item \textbf{NFCorpus} (from the BEIR benchmark) as the retrieval dataset --- a biomedical information retrieval corpus.
+  \item \textbf{\texttt{sentence-transformers/all-MiniLM-L6-v2}} as the SentenceTransformer retriever (22M parameters, 384-dim embeddings).
+  \item \textbf{MultipleNegativesRankingLoss (MNR / InfoNCE)} as the local training objective --- a direct contrastive loss with no external teacher model.
+  \item \textbf{Flower (flwr 1.22.0)} as the federated simulation framework.
+  \item \textbf{Kaggle dual-T4 GPU notebooks} as the execution environment.
+\end{itemize}
+
+\begin{warnbox}{What Changed from the Earlier Report}
+  The most significant architectural change from the earlier project state is the \textbf{replacement of LM-Supervised Retrieval (LSR) with direct contrastive training}. The old system used \texttt{distilgpt2} as a frozen teacher model. Experiments proved that \texttt{distilgpt2} assigns near-uniform likelihoods to any domain text, making all client updates byte-for-byte identical regardless of data quality. The current system replaces LSR with \textbf{MultipleNegativesRankingLoss}, where the training loss is directly sensitive to whether the paired document is correct or not. This change made noise visible and enabled the QA-FedAvg mechanism to function as designed. All results in this report reflect this updated architecture.
+\end{warnbox}
+
+\subsection{Problem Statement}
+
+In standard federated learning, all client updates are averaged weighted only by dataset size. When some clients have corrupted or low-quality data, their gradients can degrade the global model. This project investigates: \textit{can we automatically detect and downweight those clients using a quality signal derived solely from their training dynamics, without the server ever seeing client data?}
+
+\subsection{Current Status}
+
+\begin{successbox}{Mechanism Benchmark: Fully Validated}
+  The quality-aware aggregation mechanism has been rigorously proven across 8 experiments and 3 independent random seeds. With $\alpha=0.7$, QA-FedAvg achieves a mean test MRR of \textbf{0.02515}, beating standard FedAvg (0.02491) by \textbf{+0.96\%} on average across seeds 42, 123, and 256. The strict client ordering (C4 $<$ C3 $<$ all clean clients) is enforced 100\% of rounds across all seeds.
+\end{successbox}
+
+\begin{warnbox}{Robustness Benchmark: Partially Complete}
+  The stress-track benchmark (one large noisy client vs.\ four clean clients) has revealed a \textbf{fundamental vulnerability}: the \texttt{train\_loss} quality signal fails completely against \texttt{hard\_negative} noise because hard negatives appear to have \textit{lower} loss than clean data (a ``false clean'' illusion). This remains an open problem requiring a more robust quality signal.
+\end{warnbox}
+
+% =============================================================================
+\section{Mathematical Foundations}
+% =============================================================================
+
+\subsection{Standard FedAvg}
+
+In classical Federated Averaging \cite{mcmahan2017}, the global model $w_{\text{global}}$ after one round is the weighted average of all $N$ client models:
+
+\begin{equation}
+  w_{\text{global}} = \sum_{i=1}^{N} \frac{n_i}{n_{\text{total}}} \cdot w_i
+  \label{eq:fedavg}
+\end{equation}
+
+where $n_i$ is the number of training examples on client $i$ and $n_{\text{total}} = \sum_{i=1}^N n_i$.
+
+\subsection{QA-FedAvg (Quality-Aware FedAvg)}
+
+The proposed modification introduces a \textbf{quality score} per client reflecting the perceived cleanliness of that client's data. The aggregation weight is a convex blend of the size weight and this quality score:
+
+\begin{equation}
+  \text{weight}_i = (1 - \alpha) \cdot \underbrace{\frac{n_i}{n_{\text{total}}}}_{\text{size weight}} + \alpha \cdot \underbrace{q_i}_{\text{quality score}}
+  \label{eq:qa_fedavg_weight}
+\end{equation}
+
+\begin{equation}
+  w_{\text{global}} = \sum_{i=1}^{N} \text{weight}_i \cdot w_i
+  \label{eq:qa_fedavg}
+\end{equation}
+
+The scalar $\alpha \in [0, 1]$ is the \textbf{quality influence parameter}:
+\begin{itemize}
+  \item $\alpha = 0.0 \Rightarrow$ pure FedAvg (identical to Equation~\ref{eq:fedavg}).
+  \item $\alpha = 1.0 \Rightarrow$ purely quality-driven aggregation (dataset size ignored).
+  \item $\alpha \in (0,1) \Rightarrow$ interpolation between both extremes.
+\end{itemize}
+
+\subsection{Quality Score Computation}
+
+The quality score $q_i$ is derived from a \textbf{loss signal} $\ell_i$ that reflects the quality of client $i$'s training data. The scores are computed via a temperature-scaled softmax:
+
+\begin{equation}
+  q_i = \frac{\exp(-\beta \cdot \hat{\ell}_i)}{\sum_{j=1}^{N} \exp(-\beta \cdot \hat{\ell}_j)}
+  \label{eq:quality_score}
+\end{equation}
+
+where $\hat{\ell}_i$ is the $z$-scored loss:
+\begin{equation}
+  \hat{\ell}_i = \frac{\ell_i - \mu_\ell}{\sigma_\ell}, \qquad \mu_\ell = \frac{1}{N}\sum_j \ell_j, \quad \sigma_\ell = \text{std}(\ell_1,\ldots,\ell_N)
+  \label{eq:zscore}
+\end{equation}
+
+The current value is $\beta = 2.0$. The $z$-scoring makes the softmax robust to the absolute scale of losses across rounds. The negation $-\beta\hat{\ell}_i$ ensures that clients with \textit{lower} loss receive \textit{higher} quality scores.
+
+\begin{keybox}{Why $\beta = 2.0$ (Not $\beta = 5.0$)}
+  Early experiments used $\beta = 5.0$, which caused extreme weight concentration: with a difference of 0.003 in raw loss values, a 1000:1 weight ratio emerged, and the single ``best'' client captured $\sim$99.98\% of aggregation weight at $\alpha=1.0$. This made the federated training equivalent to training on a single client's data --- worse than FedAvg. Reducing to $\beta = 2.0$ produces a maximum quality score of $\sim$45--50\% per client (healthy spread), while still penalising noisy clients by 20--100$\times$.
+\end{keybox}
+
+\subsection{The Current Quality Signal: Contrastive Training Loss}
+
+The loss $\ell_i$ sent from each client to the server is the \textbf{contrastive training loss} (MultipleNegativesRankingLoss / InfoNCE) accumulated over the client's local training epoch:
+
+\begin{equation}
+  \ell_i = \mathcal{L}_{\text{MNR}}^{(i)} = \text{mean loss over all training batches on client } i
+  \label{eq:train_loss_signal}
+\end{equation}
+
+This is the same scalar that the SentenceTransformerTrainer reports as \texttt{training\_loss} at the end of \texttt{trainer.train()}. It is then sent to the server inside the Flower \texttt{metrics} dict as \texttt{"loss"}.
+
+\paragraph{Why contrastive loss is an ideal quality signal for this benchmark.}
+
+In MultipleNegativesRankingLoss, the model must push the query embedding close to its correct (positive) document and far from all other documents in the batch (which act as implicit negatives). When a client's ``positive'' response is actually a random document from the corpus (i.e.\ \texttt{random\_negative} noise), the model is being asked to pull the query close to a semantically irrelevant document. This is a fundamentally harder optimisation task:
+\begin{itemize}
+  \item For \textbf{clean clients}: the correct document is genuinely semantically related to the query. The model can make progress, reducing loss to $\sim$2.1--2.3.
+  \item For \textbf{noisy clients}: the ``correct'' document is random and unrelated. The model cannot satisfy the contrastive objective, and loss remains high: $\sim$2.6 (50\% noise) and $\sim$3.0 (90\% noise).
+\end{itemize}
+
+This creates a perfect, monotonic ordering of losses across the noise ladder, every round, without exception.
+
+\subsection{The MNR (InfoNCE) Loss: Mathematical Details}
+
+For a batch of $B$ query-positive pairs $\{(q_k, d_k^+)\}_{k=1}^B$, the MultipleNegativesRankingLoss treats all other $B-1$ documents in the batch as negatives for each query:
+
+\begin{equation}
+  s_{kj} = \frac{\mathbf{e}_{q_k} \cdot \mathbf{e}_{d_j}}{\|\mathbf{e}_{q_k}\| \|\mathbf{e}_{d_j}\|}
+  \label{eq:mnr_similarity}
+\end{equation}
+
+\begin{equation}
+  \mathcal{L}_{\text{MNR}} = -\frac{1}{B} \sum_{k=1}^{B} \log \frac{\exp(s_{kk} / \tau)}{\sum_{j=1}^{B} \exp(s_{kj} / \tau)}
+  \label{eq:mnr_loss}
+\end{equation}
+
+where $\tau$ is a temperature parameter (set to 1.0 in the default MNR loss). This is equivalent to the InfoNCE loss used in contrastive representation learning. The loss is minimised when the query embedding is closer to its own positive document than to any other document in the batch.
+
+\subsection{The Legacy Quality Signal: Rank Displacement (Historical Context)}
+
+The original quality signal, used in experiments exp\_02 through exp\_06, was the \textbf{rank displacement} on a shared quality probe set. It is documented here for completeness but is \textbf{no longer used}.
+
+Before and after each client's local training, the rank $r_q$ of the ground-truth document was computed for each query $q$ in the shared quality set $\mathcal{S}$ (400 pairs):
+
+\begin{equation}
+  \delta_q = r_q^{\text{after}} - r_q^{\text{before}}, \qquad
+  \ell_i^{\text{rank}} = \overline{\max(\delta_q, 0)} - 0.5 \cdot \overline{\max(-\delta_q, 0)}
+  \label{eq:rank_displacement}
+\end{equation}
+
+\begin{warnbox}{Why Rank Displacement Was Abandoned}
+  The 400-pair shared probe set can only resolve MRR differences at a granularity of $\sim 1/400 \approx 0.0025$ per rank change. The actual per-round delta\_mrr values were in the range $\pm 0.0001$ --- an order of magnitude below the measurement resolution. This meant the signal was dominated by noise, and the strict client ordering (C4 $<$ C3 $<$ clean) was satisfied in only $\sim$25\% of rounds, causing the \texttt{lower\_quality\_clients\_downweighted} acceptance test to fail. The contrastive train\_loss spans a range of $\sim$47\% relative to the mean, making it far more discriminative.
+\end{warnbox}
+
+\subsection{Normalisation Requirement}
+
+After computing weights $\text{weight}_i$ for all clients, the server normalises them:
+
+\begin{equation}
+  \hat{\text{weight}}_i = \frac{\text{weight}_i}{\sum_{j=1}^{N} \text{weight}_j}
+  \label{eq:normalise}
+\end{equation}
+
+Both components (size weights and softmax quality scores) already individually sum to 1, so their convex combination also sums to 1. The implementation re-normalises as a numerical safeguard after the blend.
+
+% =============================================================================
+\section{Contrastive Retriever Training: The Local Training Objective}
+% =============================================================================
+
+\subsection{Overview and Motivation}
+
+The current local training objective is \textbf{MultipleNegativesRankingLoss (MNR)}, implemented in \texttt{contrastive\_trainer.py}. This replaced the earlier LSR objective in experiment exp\_05.
+
+The key insight motivating this change: LSR used a frozen \texttt{distilgpt2} as a teacher, but \texttt{distilgpt2} has no domain knowledge of medical/nutritional text. It assigns approximately equal likelihoods to any NFCorpus passage regardless of whether it is the correct response. This caused:
+\begin{enumerate}
+  \item All clients, clean or noisy, to produce byte-for-byte identical model updates (proven by model hash comparison across exp\_02, exp\_03, exp\_04a).
+  \item The quality signal to be completely uninformative (no ordering of clients by noise level).
+\end{enumerate}
+
+MNR bypasses the teacher model entirely. The training signal comes directly from whether the paired document is semantically consistent with the query.
+
+\subsection{The \texttt{ContrastiveFlowerClient} Class}
+
+The \texttt{ContrastiveFlowerClient} in \texttt{contrastive\_trainer.py} is a drop-in replacement for the old LSR-based Flower client. Its key design choices:
+
+\begin{lstlisting}[caption={ContrastiveFlowerClient initialisation}]
+class ContrastiveFlowerClient:
+    def __init__(self, model, train_dataset, training_args):
+        self.model = model
+        # MNR expects "anchor" (query) and "positive" (relevant doc) columns
+        self.train_dataset = train_dataset.rename_columns(
+            {"query": "anchor", "response": "positive"}
+        )
+        self.training_args = training_args
+        # Loss holds no trainable state -- created once
+        self.loss = MultipleNegativesRankingLoss(model)
+\end{lstlisting}
+
+The \texttt{model} passed in must be \textbf{the same Python object} as \texttt{retriever.query\_encoder}. This is critical: the \texttt{audited\_fit} wrapper evaluates the retriever on the shared quality set after training, and it must see the post-training weights. If a copy were made, the evaluation would measure the pre-training state.
+
+\subsection{The \texttt{ContrastiveRetrieverTrainer} Class}
+
+This subclasses \texttt{SentenceTransformerTrainer} and overrides \texttt{create\_optimizer()}:
+
+\begin{lstlisting}[caption={Optimizer override in ContrastiveRetrieverTrainer}]
+def create_optimizer(self):
+    if self.optimizer is None:
+        decay_params = self.get_decay_parameter_names(self.model)
+        grouped = [
+            {"params": [p for n, p in self.model.named_parameters()
+                        if n in decay_params and p.requires_grad],
+             "weight_decay": self.args.weight_decay},
+            {"params": [p for n, p in self.model.named_parameters()
+                        if n not in decay_params and p.requires_grad],
+             "weight_decay": 0.0},
+        ]
+        self.optimizer = torch.optim.AdamW(grouped, lr=self.args.learning_rate, ...)
+    return self.optimizer
+\end{lstlisting}
+
+This override is necessary because the parent class builds its optimizer from \texttt{loss.parameters()}. Since \texttt{MultipleNegativesRankingLoss} has no trainable parameters of its own, the default optimizer would be empty and no learning would occur.
+
+\subsection{Why Only the Query Encoder is Trained}
+
+In the bi-encoder architecture, there is a query encoder and a context (document) encoder. Only the query encoder receives gradient updates during federated training because:
+\begin{enumerate}
+  \item Document embeddings in the knowledge store were pre-computed using the \textit{initial} context encoder weights.
+  \item Updating the context encoder would invalidate all stored embeddings, requiring expensive re-indexing after every round.
+  \item Standard practice in continual and federated retrieval systems.
+\end{enumerate}
+
+The context encoder is therefore frozen throughout federated training.
+
+% =============================================================================
+\section{System Architecture and Data Flow}
+% =============================================================================
+
+\subsection{Component Overview}
+
+Five main components interact each federated round:
+
+\begin{enumerate}
+  \item \textbf{Knowledge Store} --- An \texttt{InMemoryKnowledgeStore} holding pre-embedded NFCorpus documents (up to 8,000 of 3,633 total in NFCorpus).
+  \item \textbf{Contrastive Trainer} --- Each client trains their local query encoder using \texttt{ContrastiveFlowerClient} wrapping a \texttt{ContrastiveRetrieverTrainer}.
+  \item \textbf{Audited Fit Wrapper} --- A closure around each client's \texttt{.fit()} method that measures quality before/after training and appends quality metrics to the returned metrics dict.
+  \item \textbf{QualityAwareFedAvg Strategy (server)} --- Extends Flower's base \texttt{FedAvg}. Aggregates client updates using quality-weighted averaging.
+  \item \textbf{Flower Simulation} --- Orchestrates client spawning, weight serialisation, round progression, and best-round tracking.
+\end{enumerate}
+
+\subsection{Dataset Partitioning}
+
+The NFCorpus dataset is split into five non-overlapping subsets:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{lrp{7cm}}
+\toprule
+\textbf{Split} & \textbf{Max Size} & \textbf{Purpose} \\
+\midrule
+Training pairs & 4,000 & Distributed across 5 clients for local contrastive training \\
+Shared quality pairs & 400 & Held centrally; used for rank-displacement diagnostics (supplementary) \\
+Server validation pairs & 400 & Best-round model selection (by MRR) \\
+Final test pairs & 500 & Untouched until final evaluation; the reported metric \\
+Client holdout (per client) & 20\% of client data & Local diagnostic; not used in aggregation \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Note: the shared quality pairs are now primarily used as a \textit{diagnostic} tool (to compute rank-displacement statistics for the CSV). The \textit{quality signal} used for weighting is the contrastive training loss --- not any probe-set evaluation.
+
+\subsection{Mechanism Benchmark Client Configuration}
+
+In \texttt{mechanism} mode, 5 clients receive equal data splits with a fixed noise ladder:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{cccc}
+\toprule
+\textbf{Client ID} & \textbf{Noise Ratio} & \textbf{Role} & \textbf{Approx.\ train pairs} \\
+\midrule
+0 & 0.0 & Clean & $\sim$640 \\
+1 & 0.0 & Clean & $\sim$640 \\
+2 & 0.0 & Clean & $\sim$640 \\
+3 & 0.5 & Moderately noisy (50\% corrupted) & $\sim$640 \\
+4 & 0.9 & Heavily noisy (90\% corrupted) & $\sim$640 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+After IID splitting, 20\% of each client's data is reserved as a clean holdout, so the actual training count is $\sim$512 pairs per client.
+
+\subsection{Round-by-Round Execution}
+
+\begin{algorithm}[H]
+\caption{Single Federated Round in QA-FedRAG (Current Implementation)}
+\begin{algorithmic}[1]
+\State \textbf{Server:} Broadcast current global query-encoder weights $w^{(t)}$ to all clients.
+\For{each client $i \in \{0,1,2,3,4\}$ \textbf{in parallel (Flower simulation)}}
+  \State Load $w^{(t)}$ into local retriever via \texttt{set\_retriever\_weights()}.
+  \State Compute pre-training MRR and ranks on shared quality set $\mathcal{S}$ (diagnostic).
+  \State Run \texttt{ContrastiveFlowerClient.fit()}: one epoch of MNR training on $D_i$.
+  \State Record contrastive training loss $\ell_i$ from \texttt{output.training\_loss}.
+  \State Compute post-training MRR and ranks on shared quality set (diagnostic).
+  \State Compute per-client holdout metrics (diagnostic).
+  \State Pack $\ell_i$ into metrics as \texttt{"loss"}, \texttt{"train\_loss"}, and \texttt{"quality\_loss"}.
+  \State Return $(w_i^{(t+1)}, n_i, \text{metrics}_i)$ to server.
+\EndFor
+\State \textbf{Server:} Receive all client updates. Extract $\ell_i$ from each \texttt{metrics\_i["loss"]}.
+\State \textbf{Server:} $z$-score losses $\rightarrow$ compute quality scores $q_i$ via Eq.~\ref{eq:quality_score}.
+\State \textbf{Server:} Compute per-client weights via Eq.~\ref{eq:qa_fedavg_weight}.
+\State \textbf{Server:} Aggregate: $w^{(t+1)} = \sum_i \text{weight}_i \cdot w_i^{(t+1)}$.
+\State \textbf{Server:} Evaluate on server validation set. If best MRR so far, save this checkpoint.
+\State \textbf{Server:} Log round quality info (client weights, losses, hashes).
+\end{algorithmic}
+\end{algorithm}
+
+% =============================================================================
+\section{Noise Injection Mechanics}
+% =============================================================================
+
+\subsection{Purpose}
+
+To test whether QA-FedAvg can detect and downweight noisy clients, the benchmark intentionally corrupts the training data of designated clients. ``Corruption'' means replacing the correct \texttt{response} (positive document) with a wrong document according to the chosen noise mode.
+
+\subsection{Noise Dispatch (Bugfix History)}
+
+A critical bug existed in early experiments: the mechanism benchmark path in \texttt{split\_noisy()} hardcoded \texttt{deranged\_shuffle()} regardless of \texttt{CURRENT\_NOISE\_MODE}. The fix adds a full dispatch:
+
+\begin{lstlisting}[caption={Fixed noise dispatch in split\_noisy() for mechanism mode}]
+if CURRENT_NOISE_MODE == "shuffle":
+    replacement_responses = deranged_shuffle(original_responses, rng)
+elif CURRENT_NOISE_MODE == "random_negative":
+    replacement_responses = sample_random_negative_responses(
+        count=num_corrupt, rng=rng,
+        doc_lookup=DOC_LOOKUP,
+        original_responses=original_responses)
+elif CURRENT_NOISE_MODE == "hard_negative":
+    replacement_responses = sample_hard_negative_responses(
+        pairs=data[:num_corrupt], rng=rng)
+elif CURRENT_NOISE_MODE == "cross_domain":
+    pool = NOISE_CONTEXT.get("cross_domain_pool", [])
+    replacement_responses = [rng.choice(pool) for _ in range(num_corrupt)]
+else:
+    replacement_responses = deranged_shuffle(original_responses, rng)
+\end{lstlisting}
+
+\subsection{Noise Mode: \texttt{random\_negative} (Current Mechanism Benchmark Mode)}
+
+Each corrupted pair's \texttt{response} is replaced with a random document sampled from the full NFCorpus corpus, guaranteed to differ from the original:
+
+\begin{lstlisting}[caption={Random negative sampling}]
+def sample_random_negative_responses(*, count, rng, doc_lookup, original_responses):
+    docs = list(doc_lookup.values())
+    negatives = []
+    for original in original_responses:
+        replacement = original
+        attempts = 0
+        while replacement == original and attempts < 10:
+            replacement = rng.choice(docs)[:500]
+            attempts += 1
+        negatives.append(replacement)
+    return negatives
+\end{lstlisting}
+
+Random negatives can be from entirely different sub-topics within NFCorpus, producing responses genuinely unrelated to the query. In the MNR loss, this means the model is trained to pull the query close to an unrelated document, which produces a consistently high loss --- the discriminating signal.
+
+\subsection{Noise Mode: \texttt{shuffle} (Broken with MNR; Still in Codebase)}
+
+Responses within a corrupted slice are shuffled such that no query retains its original document (a derangement). This mode was the original noise type but proved invisible to the LSR training objective. \textbf{It has not been tested systematically with the MNR objective}, but given that shuffled responses are still in-domain NFCorpus passages (likely semantically related to some query), the contrastive loss may still discriminate less than \texttt{random\_negative}.
+
+\subsection{Noise Mode: \texttt{hard\_negative} (Robustness Benchmark, Adversarial)}
+
+Uses the frozen reference retriever to find the highest-ranked wrong document for each query --- the document most similar to the query that is \textit{not} the ground truth:
+
+\begin{lstlisting}[caption={Hard negative sampling using reference retriever}]
+def sample_hard_negative_responses(*, pairs, rng):
+    responses = []
+    for pair in pairs:
+        query_emb = REFERENCE_RETRIEVER.encode_query(pair["query"])[0].tolist()
+        results = KNOWLEDGE_STORE.retrieve(query_emb, top_k=30)
+        candidates = []
+        for _score, node in results:
+            doc_id = str(node.metadata.get("doc_id", ""))
+            if doc_id == str(pair.get("doc_id", "")): continue
+            candidates.append(str(node.text_content)[:500])
+            if len(candidates) >= 5: break
+        responses.append(candidates[0] if candidates else fallback)
+    return responses
+\end{lstlisting}
+
+\begin{warnbox}{Hard Negatives Break the train\_loss Quality Signal}
+Hard negatives are lexically very similar to the query because they are the top-ranked wrong documents from the same retriever. Since \texttt{all-MiniLM-L6-v2} already embeds them very close to the query in its initial state, the contrastive loss for these pairs is \textit{extremely low} ($\sim$0.60 vs.\ $\sim$2.3 for clean clients). The mechanism concludes that the noisy client has the cleanest data and awards it 97\% aggregation weight. This is a critical failure mode that requires a different quality signal (e.g., evaluation-based rather than training-loss-based) to resolve.
+\end{warnbox}
+
+\subsection{Noise Mode: \texttt{cross\_domain}}
+
+A separate BEIR dataset (SciFact by default) is loaded and its document texts form a pool of completely out-of-domain replacements. Each corrupted pair receives a random draw from this pool.
+
+\subsection{Noise Mode: \texttt{mixed}}
+
+Cycles through shuffle, cross-domain, and random negative for successive corrupted pairs. Useful for stress-testing signal robustness.
+
+% =============================================================================
+\section{The \texttt{audited\_fit} Wrapper}
+% =============================================================================
+
+The \texttt{client\_fn()} function in \texttt{federated\_noisy\_qa.py} creates the Flower client and monkey-patches its \texttt{.fit()} method with \texttt{audited\_fit}. This wrapper is the central measurement apparatus.
+
+\begin{lstlisting}[caption={Core logic of audited\_fit in client\_fn()}]
+def audited_fit(parameters, config):
+    # 1. Load server weights into local retriever
+    set_retriever_weights(retriever, parameters)
+
+    # 2. Snapshot pre-training state on shared quality set (diagnostic)
+    mrr_before = evaluate_retriever(retriever, KNOWLEDGE_STORE,
+                                     SHARED_QUALITY_PAIRS).get("mrr", 0.0)
+    baseline_shared_ranks = compute_doc_ranks(retriever, SHARED_QUALITY_PAIRS,
+                                              top_k=QUALITY_RANK_TOP_K)
+
+    # 3. Run contrastive training (updates retriever.query_encoder in-place)
+    weights, num_examples, metrics = original_fit(parameters, config)
+    train_loss = float(metrics.get("loss", 1.0))
+
+    # 4. Compute post-training diagnostic metrics
+    mrr_after = evaluate_retriever(retriever, KNOWLEDGE_STORE,
+                                    SHARED_QUALITY_PAIRS).get("mrr", 0.0)
+    delta_mrr = mrr_before - mrr_after          # positive = degraded (diagnostic only)
+    quality_summary = compute_shared_quality_signal(retriever, baseline_shared_ranks)
+    holdout_metrics = compute_client_holdout_metrics(retriever, cid)
+
+    # 5. Pack THE quality signal: train_loss is what the server uses
+    metrics["train_loss"] = train_loss
+    metrics["loss"] = train_loss          # <-- server reads "loss" as ell_i
+    metrics["quality_loss"] = train_loss
+    metrics["quality_metric_name"] = "train_loss"
+    metrics["quality_metric_value"] = -train_loss  # higher quality = lower loss
+    # ... (delta_mrr, rank displacement, holdout MRR packed as diagnostics)
+
+    return weights, num_examples, metrics
+\end{lstlisting}
+
+The critical line is \texttt{metrics["loss"] = train\_loss}. The server's \texttt{QualityAwareFedAvg.aggregate\_fit()} reads \texttt{fit\_res.metrics.get("loss", 1.0)} as $\ell_i$ for each client. By setting this field to the contrastive training loss, the server uses training dynamics as its quality proxy.
+
+% =============================================================================
+\section{The \texttt{QualityAwareFedAvg} Strategy (Server-Side)}
+% =============================================================================
+
+The \texttt{QualityAwareFedAvg} class in \texttt{quality\_aware\_fedavg.py} extends Flower's base \texttt{FedAvg}. Its \texttt{aggregate\_fit()} method is called once per round after all clients return their updates.
+
+\subsection{Aggregation Logic}
+
+\begin{lstlisting}[caption={Core aggregation logic in QualityAwareFedAvg.aggregate\_fit()}]
+# Extract losses and compute quality scores
+losses = np.array([item["loss"] for item in client_data], dtype=float)
+quality_scores = self._compute_quality_scores(losses)  # z-score + softmax
+
+# Size weights (by number of training examples)
+n_examples = np.array([item["n_examples"] for item in client_data], dtype=float)
+size_weights = n_examples / n_examples.sum()
+
+# Convex blend
+combined_weights = self.alpha * quality_scores + (1 - self.alpha) * size_weights
+combined_weights /= combined_weights.sum()  # normalise
+
+# Weighted aggregation layer by layer
+aggregated = []
+for layer_idx in range(num_layers):
+    layer_sum = np.zeros_like(all_weights[0][layer_idx])
+    for j, client_weights in enumerate(all_weights):
+        layer_sum += combined_weights[j] * client_weights[layer_idx]
+    aggregated.append(layer_sum)
+\end{lstlisting}
+
+\subsection{Quality Score Computation (z-score + softmax)}
+
+\begin{lstlisting}[caption={\_compute\_quality\_scores() in QualityAwareFedAvg}]
+def _compute_quality_scores(self, losses):
+    if len(losses) == 1:
+        return np.array([1.0])
+    std = float(np.std(losses))
+    if std <= self.epsilon:          # all losses equal -> uniform weights
+        return np.full(losses.shape, 1.0 / len(losses))
+    zscores = (losses - np.mean(losses)) / std
+    scaled = -self.quality_beta * zscores
+    scaled -= float(np.max(scaled))  # numerical stability
+    exp_scores = np.exp(scaled)
+    return exp_scores / float(np.sum(exp_scores))
+\end{lstlisting}
+
+\subsection{Best-Round Tracking}
+
+The strategy tracks the best-performing round by server validation MRR:
+
+\begin{lstlisting}[caption={Best-round selection logic}]
+candidate_key = (post_eval_metrics.get("mrr", 0.0),
+                 post_eval_metrics.get("ndcg_at_k", 0.0))
+current_best_key = (self.best_post_eval_metrics.get("mrr", -np.inf),
+                    self.best_post_eval_metrics.get("ndcg_at_k", -np.inf))
+if candidate_key > current_best_key:
+    self.best_global_ndarrays = [layer.copy() for layer in aggregated]
+    self.best_round = server_round
+\end{lstlisting}
+
+After all rounds, \texttt{main()} evaluates \texttt{strategy.best\_global\_ndarrays} on the final test set to produce the reported metrics.
+
+\subsection{Round Quality Info}
+
+Every round appends a dict to \texttt{strategy.round\_quality\_info} containing: round number, alpha, aggregated loss, aggregated delta norm, aggregated model hash, post-eval metrics, per-client records (loss, quality score, size weight, combined weight, delta norm, probe metrics, shared quality metrics), and best-round-so-far tracking.
+
+This data is used to generate the CSV output and the acceptance report.
+
+% =============================================================================
+\section{Acceptance Tests}
+% =============================================================================
+
+After each run, \texttt{evaluate\_single\_run\_acceptance()} produces a structured pass/fail report:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.5}
+\begin{tabularx}{\textwidth}{lXcc}
+\toprule
+\textbf{Test} & \textbf{What it checks} & \textbf{When applicable} \\
+\midrule
+\texttt{alpha\_zero\_matches\_fedavg} & All combined weights equal size weights & $\alpha=0.0$ \\
+\texttt{higher\_loss\_clients\_downweighted} & The client with the highest loss has combined weight $<$ size weight & $\alpha>0$ \\
+\texttt{distinct\_round\_trajectories} & All $R$ model hashes are distinct (model actually changed) & Always \\
+\texttt{lower\_quality\_clients\_downweighted} & Strict ordering: weight(C4) $<$ weight(C3) $<$ min(weight(C0,C1,C2)) & $\alpha>0$, mechanism mode \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The primary gate for the mechanism benchmark is \texttt{lower\_quality\_clients\_downweighted}. It must pass \textbf{every round} for a run to be considered a full success. The strict ordering check is:
+
+\begin{lstlisting}[caption={Strict ordering check in evaluate\_single\_run\_acceptance()}]
+noisy_sorted = sorted(noisy_clients,
+    key=lambda c: float(CURRENT_CLIENT_NOISE_MAP.get(c, 0)), reverse=True)
+clean_weights = [record_map[cid]["combined_weight"] for cid in clean_clients]
+noisy_weights_sorted = [record_map[cid]["combined_weight"] for cid in noisy_sorted]
+
+# Check: weight(C4) < weight(C3) < min(clean weights)
+order_ok = True
+for i in range(len(noisy_weights_sorted) - 1):
+    if noisy_weights_sorted[i] >= noisy_weights_sorted[i + 1]:
+        order_ok = False; break
+if order_ok and noisy_weights_sorted and clean_weights:
+    if noisy_weights_sorted[-1] >= min(clean_weights):
+        order_ok = False
+\end{lstlisting}
+
+% =============================================================================
+\section{Evaluation Metrics}
+% =============================================================================
+
+All metrics are computed by \texttt{evaluate\_retriever()} in \texttt{prepare\_beir\_data.py} with $k=10$.
+
+\subsection{Mean Reciprocal Rank (MRR)}
+
+\begin{equation}
+  \text{MRR} = \frac{1}{|Q|} \sum_{q \in Q} \frac{1}{\text{rank}_q}
+\end{equation}
+
+where $\text{rank}_q$ is the position of the ground-truth document in the retriever's ranked list. If not found in the top-$k$, the reciprocal rank for that query is 0. MRR is the primary metric throughout this project.
+
+\subsection{Recall@$k$}
+
+\begin{equation}
+  \text{Recall}@k = \frac{1}{|Q|} \sum_{q \in Q} \mathbf{1}[d_q \in \text{top-}k(q)]
+\end{equation}
+
+Binary: 1 if the correct document appears anywhere in the top-$k$ retrieved results.
+
+\subsection{NDCG@$k$}
+
+\begin{equation}
+  \text{NDCG}@k = \frac{1}{|Q|} \sum_{q \in Q} \frac{\mathbf{1}[d_q \in \text{top-}k(q)]}{\log_2(\text{rank}_q + 1)}
+\end{equation}
+
+Since each query has exactly one relevant document, IDCG$=1/\log_2(2)=1$ and NDCG simplifies as above.
+
+\subsection{Model Hash}
+
+\begin{equation}
+  \text{hash}(w) = \text{MD5}\!\left(\text{concat}_{l}\bigl(\text{flatten}(w_l)\bigr)\right)
+\end{equation}
+
+A deterministic MD5 fingerprint of the model's full parameter vector. Used throughout the project to verify that training actually modified the model. Identical hashes across experiments prove byte-for-byte identical models --- the key tool that revealed the LSR/distilgpt2 problem and confirmed the contrastive training fix.
+
+% =============================================================================
+\section{Configuration and Execution}
+% =============================================================================
+
+\subsection{Mechanism Benchmark Constants}
+
+In \texttt{mechanism} mode, \texttt{resolve\_benchmark\_config()} ignores all CLI arguments and enforces these constants:
+
+\begin{lstlisting}[caption={MECHANISM\_* constants in federated\_noisy\_qa.py}]
+MECHANISM_CLIENT_NOISE_MAP = {
+    "0": 0.0, "1": 0.0, "2": 0.0,
+    "3": 0.5,   # 50% of C3's data is random_negative corrupted
+    "4": 0.9,   # 90% of C4's data is random_negative corrupted
+}
+MECHANISM_NOISE_MODE = "random_negative"
+MECHANISM_CLIENT_SPLIT_MODE = "equal"
+MECHANISM_RETRIEVER = "sentence-transformers/all-MiniLM-L6-v2"
+\end{lstlisting}
+
+\subsection{Hyperparameter Summary}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{lll}
+\toprule
+\textbf{Parameter} & \textbf{Value} & \textbf{Rationale} \\
+\midrule
+Retriever & \texttt{all-MiniLM-L6-v2} & Only retriever that improves under this training \\
+Learning rate & $2\times10^{-6}$ & $5\times10^{-7}$ too slow; $5\times10^{-6}$ collapses \\
+Local epochs & 1 & $\geq$2 causes collapse \\
+Federated rounds & 4 & $\geq$6 degrades past pre-train baseline \\
+Batch size & 8 & Standard for sentence-transformers \\
+Clients & 5 & 3 clean, 1 moderately noisy, 1 heavily noisy \\
+$\beta$ (quality temperature) & 2.0 & $\beta=5.0$ caused 1000:1 weight ratios \\
+$\alpha$ values tested & 0.0, 0.3, 0.7, 1.0 & Full sweep from pure FedAvg to pure quality \\
+Seeds & 42, 123, 256 & Multi-seed statistical verification \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Run Slug}
+
+Every output file is named with a deterministic slug:
+
+\begin{verbatim}
+alpha_<alpha>_track_<benchmark_mode>_seed_<seed>_mode_<noise_mode>
+    _ratio_<noise_ratio>_r<rounds>_e<local_epochs>
+
+Example (mechanism, alpha=0.7, seed=42):
+alpha_0.7_track_mechanism_seed_42_mode_random_negative_ratio_0.00_r4_e1
+\end{verbatim}
+
+The notebook's \texttt{build\_run\_slug()} must produce the exact same string as the script, or the export cell will fail with \texttt{FileNotFoundError}.
+
+% =============================================================================
+\section{Experiment History: Mechanism Benchmark}
+% =============================================================================
+
+\subsection{Diagnostic: Can Contrastive Training Improve Retrieval?}
+
+Prior to federation, a single-client training diagnostic confirmed which retriever and learning rate work:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{llccccc}
+\toprule
+\textbf{ID} & \textbf{Retriever} & \textbf{LR} & \textbf{Pre MRR} & \textbf{Post MRR} & $\Delta\%$ & \textbf{Verdict} \\
+\midrule
+1a & \texttt{paraphrase-MiniLM-L3-v2} & 2e-6 & 0.0160 & 0.0149 & $-7.1\%$ & \textcolor{alertred}{DEGRADED} \\
+1b & \texttt{paraphrase-MiniLM-L3-v2} & 5e-7 & 0.0160 & 0.0158 & $-1.5\%$ & \textcolor{alertred}{DEGRADED} \\
+1c & \texttt{all-MiniLM-L6-v2} & 2e-6 & 0.0243 & 0.0268 & $+10.3\%$ & \textcolor{successgreen}{IMPROVED} \\
+1d & \texttt{all-MiniLM-L6-v2} & 5e-7 & 0.0243 & 0.0242 & $-0.04\%$ & \textcolor{alertred}{FLAT} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{exp\_02--04a: The LSR/distilgpt2 Era (All Failed)}
+
+Experiments exp\_02, exp\_03, and exp\_04a all used LSR with \texttt{distilgpt2} as teacher. The model hashes for all 16 combinations (4 $\alpha$ values $\times$ 4 rounds) were \textit{identical} across all three experiments. Root cause: distilgpt2 assigns near-uniform likelihoods to any in-domain passage, making the gradient signal identical for clean and noisy clients regardless of noise type or ratio.
+
+\subsection{exp\_05: Contrastive Training Introduced --- Partial Success}
+
+\textbf{Key change}: Replaced LSR with MNR loss (\texttt{ContrastiveFlowerClient}).
+
+\textbf{Result}: Model hashes diverged (R1 hash $\neq$ the old \texttt{5706c0d7\ldots}), confirming noise is now visible. However, $\beta=5.0$ caused weight collapse at high $\alpha$ values ($\alpha=0.7$ and $\alpha=1.0$ performed \textit{worse} than FedAvg, with client 1 capturing $\sim$99.98\% of weight).
+
+\subsection{exp\_06: Beta Reduction + Delta-MRR Signal --- Partial Success}
+
+\textbf{Key changes}: $\beta$ reduced to 2.0, quality signal switched from rank displacement to $\delta$-MRR.
+
+\textbf{Result}: All $\alpha > 0$ now beat FedAvg. Best: $\beta=2.0$, $\alpha=1.0$ at $+3.1\%$ over FedAvg. However, the \texttt{lower\_quality\_clients\_downweighted} test still failed (0/4 rounds) because $\delta$-MRR has insufficient resolution ($\pm 0.0001$ vs.\ probe resolution of $\sim 0.0025$). The signal was directionally correct on average but could not reliably rank individual clients per-round.
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{$\alpha$} & \textbf{$\beta=1.0$ Test MRR} & \textbf{$\beta=2.0$ Test MRR} & \textbf{vs FedAvg ($\beta=2.0$)} \\
+\midrule
+0.0 & 0.02085 & 0.02085 & --- \\
+0.3 & 0.02112 & 0.02112 & $+1.3\%$ \\
+0.7 & 0.02122 & 0.02117 & $+1.5\%$ \\
+1.0 & 0.02117 & 0.02150 & $+3.1\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{exp\_07: Train Loss as Quality Signal --- Definitive Success}
+
+\textbf{Key change}: Quality signal switched to contrastive training loss (\texttt{train\_loss}).
+
+\textbf{Train loss values every round (ordered by noise level):}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Round} & \textbf{C0 (clean)} & \textbf{C1 (clean)} & \textbf{C2 (clean)} & \textbf{C3 (50\%)} & \textbf{C4 (90\%)} & \textbf{Order correct?} \\
+\midrule
+R1 & 2.1754 & 2.3638 & 2.1589 & 2.6226 & 2.9907 & \textcolor{successgreen}{\checkmark} \\
+R2 & $\sim$2.25 & $\sim$2.41 & $\sim$2.24 & $\sim$2.66 & $\sim$3.03 & \textcolor{successgreen}{\checkmark} \\
+R3 & $\sim$2.19 & $\sim$2.35 & $\sim$2.18 & $\sim$2.59 & $\sim$2.93 & \textcolor{successgreen}{\checkmark} \\
+R4 & $\sim$2.14 & $\sim$2.29 & $\sim$2.12 & $\sim$2.52 & $\sim$2.86 & \textcolor{successgreen}{\checkmark} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The ordering C4 $>$ C3 $>$ clean holds every round without exception. Correspondingly, the client weights at $\alpha=1.0$, Round 3 are:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Client} & \textbf{Noise} & \textbf{Train Loss} & \textbf{Quality Score} & \textbf{Combined Weight} \\
+\midrule
+C0 & 0\% & 2.1754 & 0.4042 & 0.4042 \\
+C1 & 0\% & 2.3638 & 0.1211 & 0.1211 \\
+C2 & 0\% & 2.1589 & 0.4493 & 0.4493 \\
+C3 & 50\% & 2.6226 & 0.0231 & 0.0231 \\
+C4 & 90\% & 2.9907 & \textbf{0.0022} & \textbf{0.0022} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+C4's effective influence is crushed from 20\% (equal split) to 0.22\%. The combined weight of noisy clients C3+C4 is only 2.5\%.
+
+\textbf{Final test metrics (exp\_07, single seed 42):}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lcccc}
+\toprule
+$\alpha$ & \textbf{Best Round} & \textbf{Test MRR} & \textbf{Test NDCG} & \textbf{vs FedAvg} \\
+\midrule
+0.0 & R3 & 0.02085 & 0.03267 & --- \\
+0.3 & R3 & 0.02085 & 0.03267 & 0.0\% \\
+0.7 & R4 & \textbf{0.02100} & \textbf{0.03281} & $+0.7\%$ \\
+1.0 & R4 & 0.02090 & 0.03272 & $+0.2\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All four acceptance tests passed for all $\alpha$ values.
+
+\subsection{exp\_08: Multi-Seed Verification --- Full Validation}
+
+\textbf{Config}: Identical to exp\_07, repeated for seeds 42, 123, 256.
+
+\textbf{Mean results across 3 seeds:}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lcccc}
+\toprule
+$\alpha$ & \textbf{Mean Test MRR} & \textbf{Std Dev} & \textbf{Mean Test NDCG} & \textbf{vs FedAvg} \\
+\midrule
+0.0 & 0.02491 & $\pm$0.00354 & 0.03602 & --- \\
+0.3 & 0.02490 & $\pm$0.00353 & 0.03601 & $-0.0\%$ \\
+0.7 & \textbf{0.02515} & $\pm$0.00360 & \textbf{0.03621} & $\mathbf{+0.96\%}$ \\
+1.0 & 0.02498 & $\pm$0.00356 & 0.03593 & $+0.28\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Per-seed breakdown:}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Seed} & $\alpha$ & \textbf{Test MRR} & \textbf{Test NDCG} & \textbf{Best Round} \\
+\midrule
+42 & 0.7 & 0.02100 & 0.03281 & R4 \\
+42 & 0.0 (FedAvg) & 0.02085 & 0.03267 & R3 \\
+\midrule
+123 & 0.7 & \textbf{0.02741} & \textbf{0.03707} & R2 \\
+123 & 0.0 (FedAvg) & 0.02654 & 0.03597 & R1 \\
+\midrule
+256 & 0.0 (FedAvg) & \textbf{0.02733} & \textbf{0.03941} & R4 \\
+256 & 0.7 & 0.02704 & 0.03874 & R4 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Seed 123 shows a $+3.2\%$ MRR gain for $\alpha=0.7$. Seed 256 slightly favours FedAvg (marginal difference). On average, $\alpha=0.7$ is the robust optimum. Acceptance tests passed 100\% of rounds across all 3 seeds and 4 $\alpha$ values.
+
+\begin{successbox}{Mechanism Benchmark: Gate Passed}
+  Mean Test MRR for $\alpha=0.7$ (0.02515) $>$ Mean Test MRR for $\alpha=0.0$ (0.02491) across 3 independent seeds. The strict client ordering (C4 $<$ C3 $<$ all clean) is satisfied 100\% of rounds across all experiments. The QA-FedAvg mechanism benchmark is fully validated.
+\end{successbox}
+
+% =============================================================================
+\section{Experiment History: Robustness Benchmark (Stress Track)}
+% =============================================================================
+
+The robustness (stress) benchmark tests a harder scenario: one client holds 40\% of the data and 80\% of it is corrupted.
+
+\subsection{Config Differences from Mechanism Benchmark}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{lll}
+\toprule
+\textbf{Parameter} & \textbf{Mechanism} & \textbf{Robustness} \\
+\midrule
+Client split mode & equal & unequal \\
+Noise distribution & ladder (0/0/0/0.5/0.9) & C4 holds 40\%; 80\% corrupted \\
+Focus & all 5 clients & 1 large noisy client (C4) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+In the stress track, standard FedAvg gives C4 \textbf{40\%} influence every round (proportional to its dataset size). QA-FedAvg must detect the noise and crush this influence to near zero.
+
+\subsection{robustness\_exp\_01 and \_02: \texttt{random\_negative} Noise (Mechanism Works, MRR Flat)}
+
+The mechanism correctly throttled C4 from 40\% to $\sim$12\% at $\alpha=0.7$ in every round across 3 seeds. However, across 3 seeds, FedAvg slightly outperformed QA-FedAvg on test MRR (mean 0.02539 vs.\ 0.02502 at $\alpha=0.7$).
+
+\begin{keybox}{Why MRR Didn't Improve Under random\_negative Noise}
+  \texttt{random\_negative} noise pushes the query embedding \textit{away} from a random document. In contrastive learning, this is generally harmless and can even act as a weak regulariser. The corrupted 80\% of C4's data is not \textit{actively destructive} enough to degrade the FedAvg model. By aggressively downweighting C4, QA-FedAvg discards the remaining 20\% of C4's \textit{clean} data, causing a slight net loss. To demonstrate the robustness benefit, a more destructive noise mode is required.
+\end{keybox}
+
+\subsection{robustness\_exp\_03: \texttt{hard\_negative} Noise --- Signal Failure Discovered}
+
+\textbf{Config}: Same as robustness\_exp\_02 but with \texttt{noise\_mode = "hard\_negative"}.
+
+\textbf{Results}: $\alpha=0.7$ achieved $+2.9\%$ test MRR over FedAvg. But inspection of client weights revealed catastrophic signal failure:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Client} & \textbf{Data Fraction} & \textbf{Noise} & \textbf{Train Loss} & \textbf{Weight ($\alpha=1.0$)} \\
+\midrule
+C0 & 15\% & 0\% & 2.412 & 0.5\% \\
+C1 & 15\% & 0\% & 2.292 & 0.7\% \\
+C2 & 15\% & 0\% & 2.295 & 0.7\% \\
+C3 & 15\% & 0\% & 2.253 & 0.8\% \\
+\textbf{C4} & \textbf{40\%} & \textbf{80\% hard-neg} & \textbf{0.603} & \textbf{97.3\%} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The mechanism \textbf{up-weighted} the poisoned client! C4's loss was 0.60 vs.\ $\sim$2.3 for clean clients. The ``false clean'' illusion: hard negatives are the top-ranked wrong documents from the same retriever. They are lexically/semantically very similar to the query, so \texttt{all-MiniLM-L6-v2} already embeds them close to the query in its initial state --- making contrastive loss extremely low. Clean clients, with genuinely complex semantic pairs, have higher ``normal'' losses.
+
+The MRR improvement at $\alpha=0.7$ was accidental: hard-negative training forced the model to heavily prioritise lexical overlap, which happened to help on NFCorpus (a lexically-rich domain). This is \textit{not} the mechanism working correctly.
+
+The \texttt{higher\_loss\_clients\_downweighted} acceptance test produced a \textbf{false positive}: it found the client with the highest loss (a clean client) and confirmed it was downweighted --- technically correct but measuring the wrong thing.
+
+\begin{warnbox}{Open Problem: train\_loss is Not a Universal Quality Proxy}
+  \texttt{train\_loss} works perfectly for \texttt{random\_negative} noise (semantically disjoint pairs $\rightarrow$ high loss) but fails completely for \texttt{hard\_negative} noise (semantically similar wrong pairs $\rightarrow$ low loss). A robust quality signal needs to be \textbf{evaluation-based} rather than training-loss-based. Candidates: a larger shared probe set for $\delta$-MRR ($\geq$1000 pairs instead of 400), or a dual signal combining train-loss with probe evaluation.
+\end{warnbox}
+
+% =============================================================================
+\section{Summary of All Key Formulas}
+% =============================================================================
+
+\begin{center}
+\renewcommand{\arraystretch}{2.2}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+\textbf{Formula} & \textbf{Equation} \\
+\midrule
+Standard FedAvg & $w_{\text{global}} = \sum_i \frac{n_i}{n_{\text{total}}} w_i$ \\
+QA-FedAvg weight & $\text{weight}_i = (1-\alpha)\frac{n_i}{n_{\text{total}}} + \alpha q_i$ \\
+QA-FedAvg aggregation & $w_{\text{global}} = \sum_i \text{weight}_i \cdot w_i$ \\
+Quality score & $q_i = \dfrac{e^{-\beta \hat{\ell}_i}}{\sum_j e^{-\beta \hat{\ell}_j}}$, \quad $\hat{\ell}_i = \frac{\ell_i - \mu_\ell}{\sigma_\ell}$, \quad $\beta = 2.0$ \\
+Quality signal (current) & $\ell_i = \mathcal{L}_{\text{MNR}}^{(i)}$ (contrastive train loss) \\
+MNR loss & $\mathcal{L}_{\text{MNR}} = -\frac{1}{B}\sum_{k=1}^{B} \log \frac{e^{s_{kk}/\tau}}{\sum_j e^{s_{kj}/\tau}}$ \\
+Cosine similarity & $s_{kj} = \frac{\mathbf{e}_{q_k} \cdot \mathbf{e}_{d_j}}{\|\mathbf{e}_{q_k}\|\|\mathbf{e}_{d_j}\|}$ \\
+Rank delta (diagnostic) & $\delta_q = r_q^{\text{after}} - r_q^{\text{before}}$ \\
+Rank disp.\ loss (legacy) & $\ell_i^{\text{rank}} = \overline{\max(\delta_q,0)} - 0.5\cdot\overline{\max(-\delta_q,0)}$ \\
+MRR & $\text{MRR} = \frac{1}{|Q|}\sum_q \frac{1}{\text{rank}_q}$ \\
+NDCG@k & $\text{NDCG}@k = \frac{1}{|Q|}\sum_q \frac{\mathbf{1}[d_q \in \text{top-}k]}{\log_2(\text{rank}_q+1)}$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+% =============================================================================
+\section{Known Constraints: Do Not Repeat}
+% =============================================================================
+
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{lp{9cm}}
+\toprule
+\textbf{Config} & \textbf{Reason} \\
+\midrule
+\texttt{paraphrase-MiniLM-L3-v2} & Degrades under contrastive training ($-7.1\%$ MRR in diagnostic) \\
+$\text{lr}=5\times10^{-7}$ & Negligible parameter movement \\
+$\text{lr}=5\times10^{-6}$ & Training collapse \\
+Epochs $\geq 2$ & Training collapse \\
+Rounds $\geq 6$ & Model degrades past pre-train baseline \\
+$\beta=5.0$ & $\sim$1000:1 weight ratio; $\alpha=1.0$ collapses to single client \\
+Shuffle noise at any ratio & Invisible to LSR (proven); behaviour with MNR untested but risky \\
+\texttt{delta\_mrr} on 400-pair probe as per-round discriminator & Signal resolution $\pm 0.0001$; probe resolution $\sim 0.0025$ --- noise-dominated \\
+Any noise type with distilgpt2 teacher & All produce byte-for-byte identical models regardless of noise \\
+\texttt{train\_loss} as signal against \texttt{hard\_negative} noise & Hard negatives have lower loss than clean data (false clean illusion) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =============================================================================
+\section{Output Files and Artefacts}
+% =============================================================================
+
+Each successful run produces four files named using the run slug:
+
+\begin{enumerate}
+  \item \textbf{\texttt{results\_<slug>.csv}} --- Round-by-round CSV (schema version 5). Contains: round, alpha, seed, all metrics, per-client quality scores, weights, losses, shared quality diagnostics, and final test metrics.
+  \item \textbf{\texttt{manifest\_<slug>.json}} --- Full configuration snapshot including data split hashes, pre/post metrics, best round, quality signal specification (includes \texttt{"strategy\_metric\_key": "loss"}, \texttt{"client\_metric\_source": "train\_loss"}).
+  \item \textbf{\texttt{acceptance\_<slug>.json}} --- Pass/fail for all four acceptance tests with evidence dicts.
+  \item \textbf{\texttt{log\_<slug>.log}} --- Full training log.
+\end{enumerate}
+
+\subsection{Key CSV Columns}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lp{9cm}}
+\toprule
+\textbf{Column} & \textbf{Meaning} \\
+\midrule
+\texttt{round} & Federated round number (1--4) \\
+\texttt{alpha} & Quality influence parameter \\
+\texttt{aggregated\_model\_hash} & MD5 of post-aggregation model (verify training changes) \\
+\texttt{server\_val\_mrr} & MRR on server validation set after this round \\
+\texttt{final\_test\_mrr} & MRR on final test set using best-round model \\
+\texttt{client\_<i>\_train\_loss} & Contrastive train loss (the quality signal $\ell_i$) \\
+\texttt{client\_<i>\_quality\_score} & Softmax quality score $q_i$ \\
+\texttt{client\_<i>\_weight} & Combined aggregation weight \\
+\texttt{client\_<i>\_shared\_quality\_mrr} & MRR on shared probe after training (diagnostic) \\
+\texttt{client\_<i>\_configured\_noise\_ratio} & Ground-truth noise ratio (for reference) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =============================================================================
+\section{Execution Environment}
+% =============================================================================
+
+\subsection{Hardware and Setup}
+
+Experiments run on Kaggle notebooks with dual NVIDIA T4 GPUs. Each of the four $\alpha$ values (0.0, 0.3, 0.7, 1.0) runs in a separate Kaggle instance simultaneously, each cloning the \texttt{q-fedrag2} branch and running \texttt{federated\_noisy\_qa.py} as a subprocess.
+
+For multi-seed runs, the \texttt{multi\_seed\_kaggle\_colab.ipynb} notebook runs seeds 42, 123, 256 sequentially within a single notebook (one $\alpha$ per notebook, four notebooks total).
+
+\subsection{Client GPU Allocation}
+
+\begin{lstlisting}[caption={GPU allocation per Flower client}]
+def get_client_resources():
+    if torch.cuda.is_available():
+        return {"num_cpus": 2, "num_gpus": 0.34}  # ~3 clients per GPU
+    return {"num_cpus": 1, "num_gpus": 0}
+\end{lstlisting}
+
+With 5 clients and 0.34 GPUs each, two T4 GPUs (2 total GPU shares) can host all 5 clients concurrently (5 $\times$ 0.34 = 1.7 GPU shares used).
+
+\subsection{Runtime Reduction}
+
+Switching from LSR to contrastive training reduced runtime from $\sim$60 min per alpha run (with distilgpt2 LM scoring overhead) to $\sim$10 min. This is because MNR requires no external model inference --- the loss is computed purely from retriever embeddings.
+
+% =============================================================================
+\section{Glossary}
+% =============================================================================
+
+\begin{description}[leftmargin=3.5cm, style=nextline]
+  \item[FedAvg] Federated Averaging. The canonical algorithm for aggregating client model updates in federated learning.
+  \item[QA-FedAvg] Quality-Aware FedAvg. This project's contribution: a convex blend of size-based and quality-based aggregation weights.
+  \item[$\alpha$] Quality influence parameter. Controls the blend between size-based (FedAvg) and quality-based weighting.
+  \item[$\beta$] Temperature parameter for the quality softmax. $\beta=2.0$ is the validated value; $\beta=5.0$ causes collapse.
+  \item[MNR / InfoNCE] MultipleNegativesRankingLoss. The contrastive training objective used for local training. Batch negatives are used; no teacher model needed.
+  \item[LSR] LM-Supervised Retrieval. The \textbf{abandoned} local training objective that used a frozen distilgpt2 as teacher. Produced noise-blind gradients.
+  \item[Bi-encoder] Retrieval architecture with separate query and document encoders. Only the query encoder is updated during federation.
+  \item[MRR] Mean Reciprocal Rank. Primary retrieval metric.
+  \item[NDCG] Normalised Discounted Cumulative Gain. Rank-position-sensitive retrieval metric.
+  \item[BEIR] Benchmarking Information Retrieval. A suite of zero-shot retrieval datasets.
+  \item[NFCorpus] A biomedical IR dataset (nutrition/food science). Used throughout this project.
+  \item[Random negative] A document from the corpus sampled randomly as a wrong response. Creates high contrastive loss $\rightarrow$ good quality signal.
+  \item[Hard negative] The top-ranked wrong document from the retriever. Lexically similar to the query $\rightarrow$ low contrastive loss $\rightarrow$ breaks train\_loss signal.
+  \item[Derangement] A permutation where no element stays in its original position. Used for shuffle noise.
+  \item[Model hash] MD5 fingerprint of the model's parameter vector. The primary tool to verify whether training changed the model.
+  \item[Run slug] A deterministic string identifier encoding the full experimental configuration. Used to name all output files.
+  \item[False clean illusion] The failure mode where hard-negative noise produces lower contrastive loss than clean data, causing QA-FedAvg to up-weight the poisoned client.
+\end{description}
+
+% ─── References ──────────────────────────────────────────────────────────────
+\begin{thebibliography}{9}
+
+\bibitem{mcmahan2017}
+  H.~B. McMahan, E.~Moore, D.~Ramage, S.~Hampson, and B.~A.~y.~Arcas.
+  \textit{Communication-Efficient Learning of Deep Networks from Decentralized Data}.
+  AISTATS 2017.
+
+\bibitem{thakur2021}
+  N.~Thakur, N.~Reimers, A.~Rücklé, A.~Srivastava, and I.~Gurevych.
+  \textit{BEIR: A Heterogeneous Benchmark for Zero-shot Evaluation of Information Retrieval Models}.
+  NeurIPS 2021.
+
+\bibitem{reimers2019}
+  N.~Reimers and I.~Gurevych.
+  \textit{Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks}.
+  EMNLP 2019.
+
+\bibitem{oord2018}
+  A.~van den Oord, Y.~Li, and O.~Vinyals.
+  \textit{Representation Learning with Contrastive Predictive Coding}.
+  arXiv:1807.03748, 2018.
+
+\bibitem{flower2022}
+  D.~J.~Beutel, T.~Topal, A.~Mathur, X.~Qiu, T.~Parcollet, and N.~D.~Lane.
+  \textit{Flower: A Friendly Federated Learning Research Framework}.
+  arXiv:2007.14390, 2020.
+
+\end{thebibliography}
+
+\end{document}

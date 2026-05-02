@@ -1,0 +1,54 @@
+{
+  "distinct_round_trajectories": {
+    "applicable": true,
+    "evidence": {
+      "rounds": 4,
+      "unique_hashes": 4
+    },
+    "passed": true
+  },
+  "high_relevance_outweighs_low_relevance": {
+    "applicable": true,
+    "evidence": {
+      "high_cid": "0",
+      "low_cid": "2",
+      "per_round": [
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    "passed": true
+  },
+  "medical_client_dominates": {
+    "applicable": true,
+    "evidence": {
+      "per_round": [
+        true,
+        true,
+        true,
+        true
+      ],
+      "target_cid": "0"
+    },
+    "passed": true
+  },
+  "relevance_scores_ordered": {
+    "applicable": true,
+    "evidence": {
+      "scores": {
+        "0": "1.0000",
+        "1": "0.4791",
+        "2": "0.0130",
+        "3": "0.0422",
+        "4": "0.3212"
+      }
+    },
+    "passed": true
+  },
+  "target_client_always_selected": {
+    "applicable": true,
+    "passed": true
+  }
+}
