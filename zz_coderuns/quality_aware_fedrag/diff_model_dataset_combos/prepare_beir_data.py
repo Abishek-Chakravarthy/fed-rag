@@ -47,13 +47,13 @@ def load_beir_dataset(dataset_name: str = "nfcorpus"):
 
     # corpus is the Knowledge Base or the collection of documents. It contains all the "answers" or evidence.
     try:
-        corpus_ds = load_dataset(f"BeIR/{dataset_name}", "corpus", split="corpus")
+        corpus_ds = load_dataset(f"BeIR/{dataset_name}", "corpus", split="corpus", trust_remote_code=True)
     except Exception:
-        corpus_ds = load_dataset(f"BeIR/{dataset_name}", split="train")
+        corpus_ds = load_dataset(f"BeIR/{dataset_name}", split="train", trust_remote_code=True)
 
     # queries is a list of Questions or search terms users might type. Each query has a unique ID and text. These are the inputs you use to train and evaluate your RAG system.
     try:
-        queries_ds = load_dataset(f"BeIR/{dataset_name}", "queries", split="queries")
+        queries_ds = load_dataset(f"BeIR/{dataset_name}", "queries", split="queries", trust_remote_code=True)
     except Exception:
         queries_ds = None
 
@@ -63,7 +63,7 @@ def load_beir_dataset(dataset_name: str = "nfcorpus"):
     collected_qrels = []
     for split_name in qrels_splits_to_try:
         try:
-            split_ds = load_dataset(f"BeIR/{dataset_name}-qrels", split=split_name)
+            split_ds = load_dataset(f"BeIR/{dataset_name}-qrels", split=split_name, trust_remote_code=True)
             collected_qrels.append(split_ds)
         except Exception:
             pass  # split does not exist for this dataset — skip silently
