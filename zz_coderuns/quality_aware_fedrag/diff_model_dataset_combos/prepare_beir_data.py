@@ -45,15 +45,38 @@ def load_beir_dataset(dataset_name: str = "nfcorpus"):
 
     print(f"📥 Loading BEIR/{dataset_name}...")
 
+    # CQADupStack (and similar) uses a config-based layout on HuggingFace:
+    #   repo  = "BeIR/cqadupstack"   config = "android"
+    # Simple datasets like nfcorpus use:
+    #   repo  = "BeIR/nfcorpus"      config = None
+    if "/" in dataset_name:
+        parts = dataset_name.split("/", 1)
+        hf_repo = f"BeIR/{parts[0]}"
+        hf_config = parts[1]
+        hf_qrels_repo = f"BeIR/{parts[0]}-qrels"
+    else:
+        hf_repo = f"BeIR/{dataset_name}"
+        hf_config = None
+        hf_qrels_repo = f"BeIR/{dataset_name}-qrels"
+
     # corpus is the Knowledge Base or the collection of documents. It contains all the "answers" or evidence.
     try:
-        corpus_ds = load_dataset(f"BeIR/{dataset_name}", "corpus", split="corpus", trust_remote_code=True)
+        if hf_config:
+            corpus_ds = load_dataset(hf_repo, hf_config, split="corpus", trust_remote_code=True)
+        else:
+            corpus_ds = load_dataset(hf_repo, "corpus", split="corpus", trust_remote_code=True)
     except Exception:
-        corpus_ds = load_dataset(f"BeIR/{dataset_name}", split="train", trust_remote_code=True)
+        if hf_config:
+            corpus_ds = load_dataset(hf_repo, hf_config, split="train", trust_remote_code=True)
+        else:
+            corpus_ds = load_dataset(hf_repo, split="train", trust_remote_code=True)
 
     # queries is a list of Questions or search terms users might type. Each query has a unique ID and text. These are the inputs you use to train and evaluate your RAG system.
     try:
-        queries_ds = load_dataset(f"BeIR/{dataset_name}", "queries", split="queries", trust_remote_code=True)
+        if hf_config:
+            queries_ds = load_dataset(hf_repo, hf_config, split="queries", trust_remote_code=True)
+        else:
+            queries_ds = load_dataset(hf_repo, "queries", split="queries", trust_remote_code=True)
     except Exception:
         queries_ds = None
 
@@ -63,14 +86,17 @@ def load_beir_dataset(dataset_name: str = "nfcorpus"):
     collected_qrels = []
     for split_name in qrels_splits_to_try:
         try:
-            split_ds = load_dataset(f"BeIR/{dataset_name}-qrels", split=split_name, trust_remote_code=True)
+            if hf_config:
+                split_ds = load_dataset(hf_qrels_repo, hf_config, split=split_name, trust_remote_code=True)
+            else:
+                split_ds = load_dataset(hf_qrels_repo, split=split_name, trust_remote_code=True)
             collected_qrels.append(split_ds)
         except Exception:
             pass  # split does not exist for this dataset — skip silently
 
     if not collected_qrels:
         raise RuntimeError(
-            f"Could not load any qrels split for BeIR/{dataset_name}-qrels. "
+            f"Could not load any qrels split for {hf_qrels_repo}. "
             f"Tried: {qrels_splits_to_try}"
         )
 
