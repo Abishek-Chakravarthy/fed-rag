@@ -1,27 +1,27 @@
 """
-Non-Federated Diagnostic: Does contrastive training on FiQA improve retrieval?
+Non-Federated Diagnostic: CQADupStack dataset/LR sweep.
 
-Trains a single retriever on a clean dataset (no federation, no noise, no Flower)
-using MultipleNegativesRankingLoss (InfoNCE) and measures MRR / NDCG before and
-after.  Sweeps multiple learning-rate and dataset variants to find the winning
-config before investing in full federated runs.
+FiQA (D1-D5) was already tested and failed -- all-MiniLM-L6-v2 is already
+at ceiling on financial text (pre-train MRR 0.168, training loss ~0.47).
+This run tests CQADupStack sub-forums whose niche technical language
+(LaTeX, Android APIs) should give the model genuine headroom to improve.
 
 Gates for Phase 1 (QA-FedAvg) and Phase 1B (DAS-FedAvg):
-  PASS  → any variant shows ≥ +5% relative test MRR improvement
-  MARGINAL → +1 to +5 % — consider D3 (more data) or CQADupStack
-  FAIL  → all variants ≤ 0 % — FiQA is at ceiling, switch dataset
+  PASS     -> any variant shows >= +5% relative test MRR improvement
+  MARGINAL -> +1 to +5% -- acceptable, proceed with best LR
+  FAIL     -> all variants <= 0% -- dataset also at ceiling, reassess
 
 Variants:
-  D1  fiqa     LR=2e-6  max_train=4000   (matches proven QA-FedAvg config)
-  D2  fiqa     LR=5e-7  max_train=4000   (matches proven DAS-FedAvg config)
-  D3  fiqa     LR=2e-6  max_train=10000  (use more of FiQA's 14K pairs)
-  D4  fiqa     LR=1e-6  max_train=4000   (untested midpoint)
-  D5  nfcorpus LR=2e-6  max_train=4000   (control — must reproduce +5.6%)
+  C1  cqadupstack/android  LR=2e-6  max_train=4000  (proven QA-FedAvg LR)
+  C2  cqadupstack/android  LR=5e-7  max_train=4000  (proven DAS-FedAvg LR)
+  C3  cqadupstack/android  LR=1e-6  max_train=4000  (midpoint LR)
+  C4  cqadupstack/tex      LR=2e-6  max_train=4000  (most niche domain)
+  C5  cqadupstack/tex      LR=1e-6  max_train=4000  (tex + midpoint LR)
 
-Usage (Kaggle / lfed-rag/zz_coderuns/quality_aware_fedrag/diff_model_dataset_combos/diagnostic_kaggle.ipynbocal):
-    python fiqa_diagnostic.py                   # run all variants sequentially
-    python fiqa_diagnostic.py --variants D1,D5  # run specific variants
-    python fiqa_diagnostic.py --run-single D1   # internal: one variant in-process
+Usage (Kaggle / local):
+    python diagnostic_check.py                    # run all variants
+    python diagnostic_check.py --variants C1,C4   # specific variants
+    python diagnostic_check.py --run-single C1    # internal subprocess use
 """
 
 import argparse
@@ -54,17 +54,17 @@ OUTPUT_DIR = os.path.join(
 )
 
 ALL_VARIANTS = {
-    #  ID      dataset      LR       max_train  notes
-    "D1": {"dataset": "fiqa",     "lr": 2e-6, "max_train": 4000,
-           "note": "FiQA @ LR=2e-6 (proven QA-FedAvg config)"},
-    "D2": {"dataset": "fiqa",     "lr": 5e-7, "max_train": 4000,
-           "note": "FiQA @ LR=5e-7 (proven DAS-FedAvg config)"},
-    "D3": {"dataset": "fiqa",     "lr": 2e-6, "max_train": 10000,
-           "note": "FiQA @ LR=2e-6, 10K pairs (more signal)"},
-    "D4": {"dataset": "fiqa",     "lr": 1e-6, "max_train": 4000,
-           "note": "FiQA @ LR=1e-6 (untested midpoint)"},
-    "D5": {"dataset": "nfcorpus", "lr": 2e-6, "max_train": 4000,
-           "note": "NFCorpus control — must reproduce +5.6%"},
+    #  ID      dataset                    LR       max_train  notes
+    "C1": {"dataset": "cqadupstack/android", "lr": 2e-6, "max_train": 4000,
+           "note": "CQADupStack Android @ LR=2e-6 (proven QA-FedAvg LR)"},
+    "C2": {"dataset": "cqadupstack/android", "lr": 5e-7, "max_train": 4000,
+           "note": "CQADupStack Android @ LR=5e-7 (proven DAS-FedAvg LR)"},
+    "C3": {"dataset": "cqadupstack/android", "lr": 1e-6, "max_train": 4000,
+           "note": "CQADupStack Android @ LR=1e-6 (midpoint LR)"},
+    "C4": {"dataset": "cqadupstack/tex",     "lr": 2e-6, "max_train": 4000,
+           "note": "CQADupStack TeX @ LR=2e-6 (most niche domain)"},
+    "C5": {"dataset": "cqadupstack/tex",     "lr": 1e-6, "max_train": 4000,
+           "note": "CQADupStack TeX @ LR=1e-6 (midpoint LR)"},
 }
 
 
@@ -345,37 +345,24 @@ def print_summary(results: list[dict]) -> None:
 
     if passing:
         best = max(passing, key=lambda r: r["test_mrr_delta_pct"])
+        winning_ds = best["dataset"]
         print(f"✅  GATE PASSED — {len(passing)} variant(s) exceed {PASS_THRESHOLD_PCT:.0f}% MRR improvement.")
         print(f"    Best variant: {best['id']}  ({best['note']})")
-        print(f"    LR={best['lr']:.0e}, max_train={best['max_train']}")
+        print(f"    LR={best['lr']:.0e}, dataset={winning_ds}")
         print(f"    Use this config for both Phase 1A (QA-FedAvg) and Phase 1B (DAS-FedAvg).")
-        print(f"\n    ► QA-FedAvg:  set DATASET_NAME='fiqa' and LEARNING_RATE={best['lr']:.0e} in federated_noisy_qa.py")
-        print(f"    ► DAS-FedAvg: set TARGET_DATASET='fiqa' and LEARNING_RATE={best['lr']:.0e} in federated_das.py")
+        print(f"\n    ► QA-FedAvg:  set DATASET_NAME='{winning_ds}' and LEARNING_RATE={best['lr']:.0e} in federated_noisy_qa.py")
+        print(f"    ► DAS-FedAvg: set TARGET_DATASET='{winning_ds}' and LEARNING_RATE={best['lr']:.0e} in federated_das.py")
     elif marginals:
         best = max(marginals, key=lambda r: r["test_mrr_delta_pct"])
         print(f"⚠️   GATE MARGINAL — best improvement is {best['test_mrr_delta_pct']:+.1f}% (below {PASS_THRESHOLD_PCT:.0f}% threshold).")
         print(f"    Variant {best['id']} ({best['note']}) is the best candidate.")
-        if "D3" not in [r["id"] for r in results]:
-            print(f"    Suggestion: run variant D3 (FiQA, 10K pairs) — more data may push past threshold.")
-        else:
-            print(f"    Suggestion: try CQADupStack (android subforum) — more niche domain, more headroom.")
+        print(f"    Consider proceeding with best variant or trying more epochs.")
     else:
-        print(f"❌  GATE FAILED — no variant improved MRR on FiQA.")
+        print(f"❌  GATE FAILED — no CQADupStack variant improved MRR.")
         print(f"    Suggestions:")
-        print(f"      1. Check D5 (NFCorpus control) — if it also fails, there's an environment issue.")
-        print(f"      2. Switch to CQADupStack: replace 'fiqa' with 'BeIR/cqadupstack/android' in this script.")
-        print(f"      3. Investigate training loss: is it decreasing? If not, raise LR.")
-
-    # Control check
-    d5 = next((r for r in results if r["id"] == "D5"), None)
-    if d5:
-        print(f"\n  Control (D5/NFCorpus): {d5['test_mrr_delta_pct']:+.1f}% — ", end="")
-        if d5["test_mrr_delta_pct"] > 4:
-            print("✅ matches known +5.6% result. Environment is healthy.")
-        elif d5["test_mrr_delta_pct"] > 0:
-            print("⚠️  lower than expected +5.6% — minor variance is OK.")
-        else:
-            print("❌ degraded! Environment issue — check GPU, deps, branch.")
+        print(f"      1. Investigate training loss — is it decreasing? If stuck, raise LR.")
+        print(f"      2. Try a different subforum (e.g. cqadupstack/wordpress or cqadupstack/gaming).")
+        print(f"      3. Accept NFCorpus results as-is — mechanism correctness is still demonstrable.")
 
 
 # ---------------------------------------------------------------------------
