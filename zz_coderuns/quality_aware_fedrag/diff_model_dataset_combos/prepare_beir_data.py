@@ -82,14 +82,14 @@ def load_beir_dataset(dataset_name: str = "nfcorpus"):
 
     # qrels — merge ALL available splits so we get the full set of judgments.
     # Some datasets (e.g. FiQA) put the majority of qrels in 'train', not 'test'.
+    # Note: qrels repos (e.g. BeIR/cqadupstack-qrels) only have a single
+    # 'default' config regardless of whether the main dataset has sub-configs
+    # (e.g. android, tex). Never pass hf_config here.
     qrels_splits_to_try = ["train", "validation", "test"]
     collected_qrels = []
     for split_name in qrels_splits_to_try:
         try:
-            if hf_config:
-                split_ds = load_dataset(hf_qrels_repo, hf_config, split=split_name, trust_remote_code=True)
-            else:
-                split_ds = load_dataset(hf_qrels_repo, split=split_name, trust_remote_code=True)
+            split_ds = load_dataset(hf_qrels_repo, split=split_name, trust_remote_code=True)
             collected_qrels.append(split_ds)
         except Exception:
             pass  # split does not exist for this dataset — skip silently
