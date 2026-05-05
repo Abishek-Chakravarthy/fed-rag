@@ -68,11 +68,15 @@ OUTPUT_DIR = os.path.join(
 # }
 
 ALL_VARIANTS = {
-    "C6": {"dataset": "cqadupstack/tex", "lr": 1e-6, "max_train": 10000, "epochs": 1,
+    "C4": {"dataset": "cqadupstack/tex","retriever": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1",     "lr": 2e-6, "max_train": 4000,
+           "note": "CQADupStack TeX @ LR=2e-6 (most niche domain)"},
+    "C5": {"dataset": "cqadupstack/tex","retriever": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1",     "lr": 1e-6, "max_train": 4000,
+           "note": "CQADupStack TeX @ LR=1e-6 (midpoint LR)"},
+    "C6": {"dataset": "cqadupstack/tex","retriever": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1", "lr": 1e-6, "max_train": 10000, "epochs": 1,
            "note": "TeX @ LR=1e-6, 10K pairs (more data)"},
-    "C7": {"dataset": "cqadupstack/tex", "lr": 1e-6, "max_train": 4000,  "epochs": 3,
+    "C7": {"dataset": "cqadupstack/tex","retriever": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1", "lr": 1e-6, "max_train": 4000,  "epochs": 3,
            "note": "TeX @ LR=1e-6, 3 epochs (more passes)"},
-    "C8": {"dataset": "cqadupstack/tex", "lr": 1e-6, "max_train": 10000, "epochs": 3,
+    "C8": {"dataset": "cqadupstack/tex","retriever": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1", "lr": 1e-6, "max_train": 10000, "epochs": 3,
            "note": "TeX @ LR=1e-6, 10K pairs + 3 epochs (combined)"},
 }
 

@@ -6,8 +6,8 @@ from fed_rag.retrievers import HFSentenceTransformerRetriever
 from fed_rag.data_structures import KnowledgeNode, NodeType
 
 
-RETRIEVER_MODEL = "sentence-transformers/all-MiniLM-L6-v1" # Strong retriever used for robustness-style runs.
-MECHANISM_RETRIEVER_MODEL = "sentence-transformers/all-MiniLM-L6-v1" # Step 1 diagnostic proved paraphrase-MiniLM-L3-v2 degrades under LSR (-7.1%); all-MiniLM-L6-v2 improved +10.3%.
+RETRIEVER_MODEL = "sentence-transformers/multi-qa-MiniLM-L6-cos-v1" # Strong retriever used for robustness-style runs.
+MECHANISM_RETRIEVER_MODEL = "sentence-transformers/multi-qa-MiniLM-L6-cos-v1" # Step 1 diagnostic proved paraphrase-MiniLM-L3-v2 degrades under LSR (-7.1%); all-MiniLM-L6-v2 improved +10.3%.
 MAX_CORPUS_DOCS = 8000 # The maximum number of documents to load into the knowledge store.
 MAX_TRAIN_PAIRS = 4000 # The maximum number of training pairs to use.
 MAX_SERVER_VAL_PAIRS = 400 # Validation pairs used to pick the best global round.
