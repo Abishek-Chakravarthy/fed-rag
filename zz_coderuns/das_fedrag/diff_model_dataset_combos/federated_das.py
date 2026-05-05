@@ -158,12 +158,12 @@ def build_csv_fieldnames(client_ids):
     return base_fields
 
 
-def build_run_slug(
-    *, seed: int, num_rounds: int, local_epochs: int, target: str, baseline: bool = False
-) -> str:
+def build_run_slug(*, seed, num_rounds, local_epochs, target, baseline=False):
     target_slug = target.replace("-", "_")
     prefix = "baseline_fedavg" if baseline else "soft_domain"
-    return f"{prefix}_seed_{seed}_target_{target_slug}_r{num_rounds}_e{local_epochs}"
+    retriever_model = os.environ.get("RETRIEVER_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    ret_slug = retriever_model.split("/")[-1]
+    return f"{prefix}_{ret_slug}_seed_{seed}_target_{target_slug}_r{num_rounds}_e{local_epochs}"
 
 
 def set_retriever_weights(retriever, parameters) -> None:
