@@ -158,7 +158,9 @@ def build_csv_fieldnames(client_ids):
     return base_fields
 
 
-def build_run_slug(*, seed, num_rounds, local_epochs, target, baseline=False):
+def build_run_slug(
+    *, seed: int, num_rounds: int, local_epochs: int, target: str, baseline: bool = False
+) -> str:
     target_slug = target.replace("-", "_")
     prefix = "baseline_fedavg" if baseline else "soft_domain"
     retriever_model = os.environ.get("RETRIEVER_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
