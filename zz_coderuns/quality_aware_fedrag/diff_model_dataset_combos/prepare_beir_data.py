@@ -6,8 +6,8 @@ from fed_rag.retrievers import HFSentenceTransformerRetriever
 from fed_rag.data_structures import KnowledgeNode, NodeType
 
 
-RETRIEVER_MODEL = "sentence-transformers/all-MiniLM-L6-v1"
-MECHANISM_RETRIEVER_MODEL = "sentence-transformers/all-MiniLM-L6-v1"
+RETRIEVER_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+MECHANISM_RETRIEVER_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 MAX_CORPUS_DOCS = 8000 # The maximum number of documents to load into the knowledge store.
 MAX_TRAIN_PAIRS = 4000 # The maximum number of training pairs to use.
 MAX_SERVER_VAL_PAIRS = 400 # Validation pairs used to pick the best global round.
