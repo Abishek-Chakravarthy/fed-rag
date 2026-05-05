@@ -53,20 +53,28 @@ OUTPUT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "diagnostic_results"
 )
 
-ALL_VARIANTS = {
-    #  ID      dataset                    LR       max_train  notes
-    "C1": {"dataset": "cqadupstack/android", "lr": 2e-6, "max_train": 4000,
-           "note": "CQADupStack Android @ LR=2e-6 (proven QA-FedAvg LR)"},
-    "C2": {"dataset": "cqadupstack/android", "lr": 5e-7, "max_train": 4000,
-           "note": "CQADupStack Android @ LR=5e-7 (proven DAS-FedAvg LR)"},
-    "C3": {"dataset": "cqadupstack/android", "lr": 1e-6, "max_train": 4000,
-           "note": "CQADupStack Android @ LR=1e-6 (midpoint LR)"},
-    "C4": {"dataset": "cqadupstack/tex",     "lr": 2e-6, "max_train": 4000,
-           "note": "CQADupStack TeX @ LR=2e-6 (most niche domain)"},
-    "C5": {"dataset": "cqadupstack/tex",     "lr": 1e-6, "max_train": 4000,
-           "note": "CQADupStack TeX @ LR=1e-6 (midpoint LR)"},
-}
+# ALL_VARIANTS = {
+#     #  ID      dataset                    LR       max_train  notes
+#     "C1": {"dataset": "cqadupstack/android", "lr": 2e-6, "max_train": 4000,
+#            "note": "CQADupStack Android @ LR=2e-6 (proven QA-FedAvg LR)"},
+#     "C2": {"dataset": "cqadupstack/android", "lr": 5e-7, "max_train": 4000,
+#            "note": "CQADupStack Android @ LR=5e-7 (proven DAS-FedAvg LR)"},
+#     "C3": {"dataset": "cqadupstack/android", "lr": 1e-6, "max_train": 4000,
+#            "note": "CQADupStack Android @ LR=1e-6 (midpoint LR)"},
+#     "C4": {"dataset": "cqadupstack/tex",     "lr": 2e-6, "max_train": 4000,
+#            "note": "CQADupStack TeX @ LR=2e-6 (most niche domain)"},
+#     "C5": {"dataset": "cqadupstack/tex",     "lr": 1e-6, "max_train": 4000,
+#            "note": "CQADupStack TeX @ LR=1e-6 (midpoint LR)"},
+# }
 
+ALL_VARIANTS = {
+    "C6": {"dataset": "cqadupstack/tex", "lr": 1e-6, "max_train": 10000, "epochs": 1,
+           "note": "TeX @ LR=1e-6, 10K pairs (more data)"},
+    "C7": {"dataset": "cqadupstack/tex", "lr": 1e-6, "max_train": 4000,  "epochs": 3,
+           "note": "TeX @ LR=1e-6, 3 epochs (more passes)"},
+    "C8": {"dataset": "cqadupstack/tex", "lr": 1e-6, "max_train": 10000, "epochs": 3,
+           "note": "TeX @ LR=1e-6, 10K pairs + 3 epochs (combined)"},
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -92,7 +100,7 @@ def verdict(delta_pct: float) -> str:
 # Single-variant runner (called in-process via --run-single)
 # ---------------------------------------------------------------------------
 
-def run_single_variant(vid: str, dataset: str, lr: float, max_train: int):
+def run_single_variant(vid: str, dataset: str, lr: float, max_train: int,epochs:int=1):
     """
     Train one variant end-to-end in the current process.
 
@@ -183,7 +191,7 @@ def run_single_variant(vid: str, dataset: str, lr: float, max_train: int):
 
     training_args = SentenceTransformerTrainingArguments(
         output_dir=tmp_dir,
-        num_train_epochs=1,
+        num_train_epochs=epochs,
         per_device_train_batch_size=BATCH_SIZE,
         logging_steps=50,
         save_strategy="no",
@@ -395,7 +403,7 @@ def main():
             print(f"ERROR: unknown variant '{vid}'. Available: {list(ALL_VARIANTS.keys())}")
             sys.exit(1)
         cfg = ALL_VARIANTS[vid]
-        result = run_single_variant(vid, cfg["dataset"], cfg["lr"], cfg["max_train"])
+        result = run_single_variant(vid, cfg["dataset"], cfg["lr"], cfg["max_train"],cfg.get("epochs",1))
         sys.exit(0 if result is not None else 1)
 
     # ── Orchestrator path: launch each selected variant as a subprocess ──────
