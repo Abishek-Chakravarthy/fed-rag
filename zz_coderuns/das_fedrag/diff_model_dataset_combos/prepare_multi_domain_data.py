@@ -10,7 +10,7 @@ from fed_rag.retrievers import HFSentenceTransformerRetriever
 from fed_rag.data_structures import KnowledgeNode, NodeType
 
 
-RETRIEVER_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+RETRIEVER_MODEL = os.environ.get("RETRIEVER_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 MAX_CORPUS_DOCS = 8000
 MAX_TRAIN_PAIRS = 4000
 MAX_SERVER_VAL_PAIRS = 400
