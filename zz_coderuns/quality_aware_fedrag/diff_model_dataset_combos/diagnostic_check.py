@@ -267,7 +267,7 @@ def run_single_variant(vid: str, dataset: str, lr: float, max_train: int,epochs:
         "id":                  vid,
         "note":                cfg["note"],
         "dataset":             dataset,
-        "retriever":           retriever,
+        "retriever":           "sentence-transformers/all-MiniLM-L12-v1",
         "lr":                  lr,
         "max_train":           max_train,
         "epochs":              epochs,
